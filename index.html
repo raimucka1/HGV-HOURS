@@ -453,7 +453,7 @@ function Chip({ tone = 'default', children }) {
 }
 function Dial({ segments, dayStart, isToday, now }) {
     const dayEnd = dayStart + DAY;
-    const CX = 130, CY = 130, R = 92, STROKE = 24;
+    const CX = 130, CY = 130, R = 88, STROKE = 23;
     const clipped = segments
         .map(s => (Object.assign(Object.assign({}, s), { cs: Math.max(s._start, dayStart), ce: Math.min(s._end, dayEnd) })))
         .filter(s => s.ce > s.cs);
@@ -464,13 +464,15 @@ function Dial({ segments, dayStart, isToday, now }) {
             var _a;
             return (React.createElement("path", { key: s.id, d: arcPath(CX, CY, R, ((s.cs - dayStart) / DAY) * 360, ((s.ce - dayStart) / DAY) * 360), stroke: ((_a = META[s.status]) === null || _a === void 0 ? void 0 : _a.color) || '#5B6470', strokeWidth: STROKE, fill: "none", strokeLinecap: "butt" }));
         }),
-        [0, 3, 6, 9, 12, 15, 18, 21].map(h => {
-            const p1 = polar(CX, CY, R + STROKE / 2 + 2, h / 24 * 360);
-            const p2 = polar(CX, CY, R + STROKE / 2 + 8, h / 24 * 360);
-            const lp = polar(CX, CY, R + STROKE / 2 + 20, h / 24 * 360);
+        Array.from({ length: 24 }, (_, h) => {
+            const major = h % 3 === 0;
+            const ang = h / 24 * 360;
+            const p1 = polar(CX, CY, R + STROKE / 2 + 2, ang);
+            const p2 = polar(CX, CY, R + STROKE / 2 + (major ? 8 : 5), ang);
+            const lp = polar(CX, CY, R + STROKE / 2 + 18, ang);
             return (React.createElement("g", { key: h },
-                React.createElement("line", { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, stroke: "#3A4048", strokeWidth: 1.5 }),
-                React.createElement("text", { x: lp.x, y: lp.y, fill: "#5B6470", fontSize: "9", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, pad(h))));
+                React.createElement("line", { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, stroke: major ? '#5B6470' : '#3A4048', strokeWidth: major ? 1.6 : 1 }),
+                React.createElement("text", { x: lp.x, y: lp.y, fill: major ? '#8A93A0' : '#5B6470', fontSize: major ? 8 : 6.8, textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace", fontWeight: major ? 600 : 400 }, pad(h))));
         }),
         isToday && (() => { const p = polar(CX, CY, R + STROKE / 2 + 2, nowAngle); return React.createElement("circle", { cx: p.x, cy: p.y, r: 4, fill: "#ECEEF0" }); })(),
         React.createElement("circle", { cx: CX, cy: CY, r: R - STROKE / 2 - 6, fill: "#14171A" })));

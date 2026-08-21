@@ -495,6 +495,15 @@ function computeCompliance(rawSegments, now) {
     const weekDuty = overlap(wkStart, wkEnd, s => s.status === 'driving' || s.status === 'other_work');
     const extendedDaysThisWeek = dutyDaySummaries.filter(d => d.start && d.start >= wkStart && d.start < wkEnd && d.driving > RULES.dailyDriveNormal).length;
     const drivingLeftBeforeBreak = Math.max(0, RULES.maxContinuousDriving - contDriving);
+    /* Shift spread: clock-on to now, breaks and POA included.
+       The 24h window for the next daily rest runs from the END of the previous
+       rest, so the latest finish is that moment + 24h - the rest you intend to take. */
+    const dutyStart = currentDutyDay.start;
+    const shiftElapsed = dutyStart ? Math.max(0, now - dutyStart) : 0;
+    const prevDuty = dutyDaySummaries.length > 1 ? dutyDaySummaries[dutyDaySummaries.length - 2] : null;
+    const windowStart = (prevDuty && prevDuty.restAfter) ? prevDuty.restAfter._end : dutyStart;
+    const latestFinishNormal = windowStart ? windowStart + DAY - RULES.dailyRestNormal : null;
+    const latestFinishReduced = windowStart ? windowStart + DAY - RULES.dailyRestReducedMin : null;
     const isDrivingNow = withEnd.length > 0 && !withEnd[withEnd.length - 1].end
         && withEnd[withEnd.length - 1].status === 'driving';
     const openSeg = withEnd.length > 0 && !withEnd[withEnd.length - 1].end ? withEnd[withEnd.length - 1] : null;
@@ -536,6 +545,7 @@ function computeCompliance(rawSegments, now) {
         backToBackReduced, compOwed, reducedDailyCount, shortDailyRests,
         dutyDaySummaries, currentDutyDay, contDriving,
         drivingLeftBeforeBreak, breakDueAt, isDrivingNow, isWorkingNow, nextBreak,
+        dutyStart, shiftElapsed, latestFinishNormal, latestFinishReduced,
         workSinceBreak, workLeftBeforeBreak, todayWorking,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
         splitBreakPending: !!firstBreakPart,
@@ -1037,6 +1047,22 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                         : 'The B marker on the dial sits at whichever rule falls due first. Only break parts of 15 minutes or more count.')));
             })()),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
+            comp.dutyStart && (React.createElement("div", { className: "pb-3 mb-3 border-b border-[#22262C]" },
+                React.createElement("div", { className: "flex items-baseline justify-between" },
+                    React.createElement("span", { className: "text-xs text-[#8A93A0]" },
+                        "Shift so far (from ",
+                        fmtClock(comp.dutyStart),
+                        ")"),
+                    React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22, color: '#ECEEF0' } }, fmtHM(comp.shiftElapsed))),
+                React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-1" }, "Clock-on to now, breaks and POA included"),
+                comp.latestFinishNormal && (React.createElement("div", { className: "flex justify-between text-xs mt-2" },
+                    React.createElement("span", { className: "text-[#8A93A0]" }, "Latest finish"),
+                    React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", color: '#ECEEF0' } },
+                        fmtClock(comp.latestFinishNormal),
+                        React.createElement("span", { className: "text-[#5B6470]" },
+                            " \u00B7 ",
+                            fmtClock(comp.latestFinishReduced),
+                            " on 9h rest")))))),
             React.createElement(GaugeBar, { label: "Today's driving", value: comp.currentDutyDay.driving, max: RULES.dailyDriveExtended, color: "#F5A623" }),
             React.createElement("div", { className: "pt-1 space-y-2" }, [
                 ['Today\u2019s working time', comp.currentDutyDay.driving + comp.currentDutyDay.otherWork, META.other_work.color],

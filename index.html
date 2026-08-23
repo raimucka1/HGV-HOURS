@@ -225,7 +225,6 @@ const RULES = {
     weeklyRestDeadline: 144 * HOUR,
     wtdWeeklyAvg: 48 * HOUR,
     wtdWeeklyMax: 60 * HOUR,
-    wtdNightMax: 10 * HOUR,
     wtdMaxWorkWithoutBreak: 6 * HOUR, // reg 7(1): no work beyond 6h without a break
     wtdMinBreakPart: 15 * MIN, // reg 7(4): each break part at least 15 min
     wtdWorkTier2: 9 * HOUR,
@@ -1117,7 +1116,26 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                         reducedLeft === 0 && (React.createElement("div", { className: "text-[10px] mt-1", style: { color: '#F5A623' } },
                             "All 3 reduced rests used since your last weekly rest \u2014 11h needed, so ",
                             fmtClock(comp.latestFinishNormal),
-                            " is your limit."))));
+                            " is your limit.")),
+                        (() => {
+                            const stops = [];
+                            const restLimit = reducedLeft > 0 ? comp.latestFinishReduced : comp.latestFinishNormal;
+                            if (restLimit)
+                                stops.push({ at: restLimit, why: reducedLeft > 0 ? 'daily rest (9h)' : 'daily rest (11h)' });
+                            if (!stops.length)
+                                return null;
+                            stops.sort((a, b) => a.at - b.at);
+                            const first = stops[0];
+                            const breakAfterStop = comp.breakDueAt && comp.breakDueAt > first.at;
+                            return (React.createElement("div", { className: "mt-2 pt-2 border-t border-[#22262C]" },
+                                React.createElement("div", { className: "flex justify-between text-xs" },
+                                    React.createElement("span", { style: { color: '#F5A623' } }, "Must stop working by"),
+                                    React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", color: '#F5A623' } }, fmtClock(first.at))),
+                                React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-0.5" },
+                                    "Earliest of your limits \u2014 ",
+                                    first.why,
+                                    breakAfterStop && `. Your next break isn't due until ${fmtClock(comp.breakDueAt)}, after this.`)));
+                        })()));
                 })())),
             React.createElement(GaugeBar, { label: "Today's driving", value: comp.currentDutyDay.driving, max: RULES.dailyDriveExtended, color: "#F5A623" }),
             React.createElement("div", { className: "pt-1 space-y-2" }, [
@@ -1280,8 +1298,7 @@ function RulesTab() {
             React.createElement("p", null, "This runs alongside the EU driving break, not instead of it. Whichever falls due first is the one to obey; a single 45-minute break normally satisfies both.")),
         React.createElement(RuleSection, { title: "Working Time \\u2014 weekly limits" },
             React.createElement("p", null, "Average 48-hour working week over a 17-week reference period; 60 hours absolute max in any single week."),
-            React.createElement("p", null, "Working time = driving + other work. It excludes breaks, POA and rest."),
-            React.createElement("p", null, "Night work (any duty falling between 00:00\u201304:00): max 10 hours' working time in the 24h period starting when your working week begins, unless a workforce agreement extends this.")),
+            React.createElement("p", null, "Working time = driving + other work. It excludes breaks, POA and rest.")),
         React.createElement(RuleSection, { title: "Period of Availability (POA)" },
             React.createElement("p", null, "A known-in-advance waiting period (e.g. waiting for a loading slot) where you're not working but must stay available."),
             React.createElement("p", null, "Not driving time, not working time, not a break, not rest \u2014 and it doesn't reset your 4.5h driving clock.")),

@@ -497,16 +497,20 @@ function computeCompliance(rawSegments, now) {
     /* Shift spread: clock-on to now, breaks and POA included.
        The 24h window for the next daily rest runs from the END of the previous
        rest, so the latest finish is that moment + 24h - the rest you intend to take. */
-    const dutyStart = currentDutyDay.start;
-    const shiftElapsed = dutyStart ? Math.max(0, now - dutyStart) : 0;
-    const prevDuty = dutyDaySummaries.length > 1 ? dutyDaySummaries[dutyDaySummaries.length - 2] : null;
-    const windowStart = (prevDuty && prevDuty.restAfter) ? prevDuty.restAfter._end : dutyStart;
-    const latestFinishNormal = windowStart ? windowStart + DAY - RULES.dailyRestNormal : null;
-    const latestFinishReduced = windowStart ? windowStart + DAY - RULES.dailyRestReducedMin : null;
     const isDrivingNow = withEnd.length > 0 && !withEnd[withEnd.length - 1].end
         && withEnd[withEnd.length - 1].status === 'driving';
     const openSeg = withEnd.length > 0 && !withEnd[withEnd.length - 1].end ? withEnd[withEnd.length - 1] : null;
     const isWorkingNow = !!openSeg && (openSeg.status === 'driving' || openSeg.status === 'other_work');
+    const onRest = !!openSeg && (openSeg.status === 'daily_rest' || openSeg.status === 'weekly_rest');
+    // the shift ends the moment a rest begins — it must not keep counting through it
+    const restInDuty = currentDutyDay.segs.find(x => x.status === 'daily_rest' || x.status === 'weekly_rest');
+    const shiftEndAt = restInDuty ? restInDuty._start : now;
+    const dutyStart = currentDutyDay.start;
+    const shiftElapsed = dutyStart ? Math.max(0, shiftEndAt - dutyStart) : 0;
+    const prevDuty = dutyDaySummaries.length > 1 ? dutyDaySummaries[dutyDaySummaries.length - 2] : null;
+    const windowStart = (prevDuty && prevDuty.restAfter) ? prevDuty.restAfter._end : dutyStart;
+    const latestFinishNormal = windowStart ? windowStart + DAY - RULES.dailyRestNormal : null;
+    const latestFinishReduced = windowStart ? windowStart + DAY - RULES.dailyRestReducedMin : null;
     /* WTD reg 7: working time (driving + other work) may not exceed 6h without a
        break of at least 15 min. POA neither adds to that clock nor resets it. */
     let workSinceBreak = 0, qualifyingBreakTotal = 0;
@@ -574,7 +578,7 @@ function computeCompliance(rawSegments, now) {
         backToBackReduced, compOwed, reducedDailyCount, shortDailyRests,
         dutyDaySummaries, currentDutyDay, contDriving,
         drivingLeftBeforeBreak, breakDueAt, isDrivingNow, isWorkingNow, nextBreak,
-        dutyStart, shiftElapsed, latestFinishNormal, latestFinishReduced,
+        dutyStart, shiftElapsed, latestFinishNormal, latestFinishReduced, onRest, shiftEndAt,
         workSinceBreak, workLeftBeforeBreak, todayWorking,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
         wtTier1At, wtTier2At, breakNeededAt9h,
@@ -1095,11 +1099,13 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
             comp.dutyStart && (React.createElement("div", { className: "pb-3 mb-3 border-b border-[#22262C]" },
                 React.createElement("div", { className: "flex items-baseline justify-between" },
                     React.createElement("span", { className: "text-xs text-[#8A93A0]" },
-                        "Shift so far (from ",
+                        comp.onRest ? 'Shift length' : 'Shift so far',
+                        " (from ",
                         fmtClock(comp.dutyStart),
+                        comp.onRest ? ` to ${fmtClock(comp.shiftEndAt)}` : '',
                         ")"),
                     React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22, color: '#ECEEF0' } }, fmtHM(comp.shiftElapsed))),
-                React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-1" }, "Clock-on to now, breaks and POA included"),
+                React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-1" }, comp.onRest ? 'Stopped when rest began \u2014 breaks and POA included' : 'Clock-on to now, breaks and POA included'),
                 comp.latestFinishNormal && (() => {
                     const reducedLeft = Math.max(0, RULES.maxReducedDailyRestsPerCycle - comp.reducedDailyCount);
                     return (React.createElement("div", { className: "mt-2" },
@@ -1118,6 +1124,19 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                             fmtClock(comp.latestFinishNormal),
                             " is your limit.")),
                         (() => {
+                            if (comp.onRest) {
+                                const limit = reducedLeft > 0 ? comp.latestFinishReduced : comp.latestFinishNormal;
+                                const inTime = !limit || comp.shiftEndAt <= limit;
+                                return (React.createElement("div", { className: "mt-2 pt-2 border-t border-[#22262C]" },
+                                    React.createElement("div", { className: "flex justify-between text-xs" },
+                                        React.createElement("span", { style: { color: inTime ? '#3ECF6B' : META.break.color } }, inTime ? 'Stopped in time' : 'Stopped late'),
+                                        React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace",
+                                                color: inTime ? '#3ECF6B' : META.break.color } }, fmtClock(comp.shiftEndAt))),
+                                    limit && (React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-0.5" },
+                                        "Limit was ",
+                                        fmtClock(limit),
+                                        inTime ? '' : ` \u2014 ${fmtHM(comp.shiftEndAt - limit)} over`))));
+                            }
                             const stops = [];
                             const restLimit = reducedLeft > 0 ? comp.latestFinishReduced : comp.latestFinishNormal;
                             if (restLimit)

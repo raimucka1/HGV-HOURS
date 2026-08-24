@@ -352,9 +352,23 @@ function applyOverride(list, entry) {
     const openEnded = !entry.end;
     const e = openEnded ? Number.POSITIVE_INFINITY : new Date(entry.end).getTime();
     const out = [];
+    /* "You can't start the same activity twice." If this entry repeats the status
+       of a segment that is still running, it's a correction of when that activity
+       began — drop the old one and let whatever came before it run up to the new
+       start, rather than leaving the earlier portion mislabelled. */
+    const openSame = list.find(x => x.id !== entry.id && !x.end && x.status === entry.status
+        && new Date(x.start).getTime() < s);
+    const gapFrom = openSame ? new Date(openSame.start).getTime() : null;
     for (const seg of list) {
         if (seg.id === entry.id)
             continue;
+        if (openSame && seg.id === openSame.id)
+            continue; // superseded by the correction
+        // stretch the activity that preceded it up to the corrected start
+        if (gapFrom != null && seg.end && Math.abs(new Date(seg.end).getTime() - gapFrom) < 1000) {
+            out.push(Object.assign(Object.assign({}, seg), { end: new Date(s).toISOString() }));
+            continue;
+        }
         const ys = new Date(seg.start).getTime();
         const ye = seg.end ? new Date(seg.end).getTime() : Number.POSITIVE_INFINITY;
         if (ye <= s || ys >= e) {
@@ -616,7 +630,7 @@ function Chip({ tone = 'default', children }) {
     const t = tones[tone];
     return React.createElement("span", { className: "inline-block px-2 py-1 rounded-md text-xs font-medium", style: { background: t.bg, color: t.fg } }, children);
 }
-function Dial({ segments, dayStart, isToday, now, breakDueAt }) {
+function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak }) {
     const dayEnd = dayStart + DAY;
     const CX = 130, CY = 130, R = 88, STROKE = 23;
     const clipped = segments
@@ -650,7 +664,20 @@ function Dial({ segments, dayStart, isToday, now, breakDueAt }) {
                 React.createElement("text", { x: lbl.x, y: lbl.y, fill: "#14171A", fontSize: "8", fontWeight: "700", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, "B")));
         })(),
         isToday && (() => { const p = polar(CX, CY, R + STROKE / 2 + 2, nowAngle); return React.createElement("circle", { cx: p.x, cy: p.y, r: 4, fill: "#ECEEF0" }); })(),
-        React.createElement("circle", { cx: CX, cy: CY, r: R - STROKE / 2 - 6, fill: "#14171A" })));
+        React.createElement("circle", { cx: CX, cy: CY, r: R - STROKE / 2 - 6, fill: "#14171A" }),
+        isToday && nextBreak && (() => {
+            const due = nextBreak.left <= 0;
+            const short = nextBreak.rule
+                .replace('WTD 6h without a break', 'WTD 6h rule')
+                .replace('EU 4h30m driving', 'EU driving')
+                .replace(' (6h worked)', '').replace(' (9h worked)', '');
+            return (React.createElement("g", null,
+                React.createElement("text", { x: CX, y: CY - 24, fill: due ? META.break.color : '#5B6470', fontSize: "8.5", fontWeight: "700", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'Oswald',sans-serif", letterSpacing: "1" }, due ? 'BREAK DUE NOW' : 'NEXT BREAK IN'),
+                React.createElement("text", { x: CX, y: CY + 2, fill: due ? META.break.color : '#ECEEF0', fontSize: "26", fontWeight: "700", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, due ? fmtHM(nextBreak.need) : fmtHM(nextBreak.left)),
+                React.createElement("text", { x: CX, y: CY + 22, fill: "#8A93A0", fontSize: "8", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, due ? `take \u00b7 ${short}` : `due ${fmtClock(nextBreak.at)}`),
+                React.createElement("text", { x: CX, y: CY + 36, fill: "#5B6470", fontSize: "7.5", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, due ? '' : short)));
+        })(),
+        isToday && !nextBreak && (React.createElement("text", { x: CX, y: CY, fill: "#5B6470", fontSize: "9", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'Oswald',sans-serif", letterSpacing: "1" }, "NOT WORKING"))));
 }
 /* ------------------------------------------------------------------ */
 /* Edit entry modal                                                    */
@@ -1021,7 +1048,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { className: "text-xs text-[#ECEEF0] font-medium" }, isToday ? 'Today' : fmtDate(dayStart)),
                 React.createElement("button", { onClick: () => setDialOffset(o => Math.min(0, o + 1)), disabled: isToday },
                     React.createElement(ChevronRight, { size: 18, color: isToday ? '#3A4048' : '#8A93A0' }))),
-            React.createElement(Dial, { segments: segments.map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt }),
+            React.createElement(Dial, { segments: segments.map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt, nextBreak: comp.nextBreak }),
             React.createElement("div", { className: "flex flex-wrap gap-x-3 gap-y-1 justify-center mt-2" }, STATUS_GRID.map(st => (React.createElement("div", { key: st, className: "flex items-center gap-1" },
                 React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: META[st].color } }),
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, META[st].short)))))),

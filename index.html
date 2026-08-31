@@ -295,6 +295,10 @@ const Calendar = mkIcon([
     ['path', { d: 'M3.5 10.2h17' }],
     ['path', { d: 'M8 3.2v4M16 3.2v4' }]
 ]);
+const ListIcon = mkIcon([
+    ['path', { d: 'M9 6.5h11M9 12h11M9 17.5h11' }],
+    ['path', { d: 'M4.4 6.5h.01M4.4 12h.01M4.4 17.5h.01' }]
+]);
 const X = mkIcon([
     ['path', { d: 'M5.6 5.6 18.4 18.4' }],
     ['path', { d: 'M18.4 5.6 5.6 18.4' }]
@@ -740,6 +744,20 @@ function computeCompliance(rawSegments, now) {
     const wtTier1At = dutyStart && tierElapsed < RULES.wtdMaxWorkWithoutBreak ? now + tierLeft1 : null;
     const wtTier2At = dutyStart && tierElapsed < RULES.wtdWorkTier2 ? now + tierLeft2 : null;
     const breakNeededAt9h = Math.max(0, RULES.wtdBreakTier2 - qualifyingBreakTotal);
+    /* While a break is actually running, work out how much longer it must last.
+       A part under 15 minutes counts for nothing (reg 7(4)), so topping up a
+       14-minute shortfall still means sitting for a full 15. */
+    const onBreak = !!openSeg && openSeg.status === 'break';
+    const currentBreakDur = onBreak ? Math.max(0, now - openSeg._start) : 0;
+    const currentBreakCounts = currentBreakDur >= RULES.wtdMinBreakPart;
+    const bankedBreak = qualifyingBreakTotal - (onBreak && currentBreakCounts ? currentBreakDur : 0);
+    const outstandingTotal = Math.max(0, wtdRequiredBreak - bankedBreak);
+    const euBreakDue = contDriving >= RULES.maxContinuousDriving;
+    const euNeedThisBreak = euBreakDue ? (firstBreakPart ? RULES.splitBreakSecond : RULES.breakRequired) : 0;
+    const wtdNeedThisBreak = outstandingTotal > 0 ? Math.max(RULES.wtdMinBreakPart, outstandingTotal) : 0;
+    const breakNeedThis = Math.max(euNeedThisBreak, wtdNeedThisBreak);
+    const breakRemaining = onBreak ? Math.max(0, breakNeedThis - currentBreakDur) : 0;
+    const breakSatisfied = onBreak && breakNeedThis > 0 && breakRemaining === 0;
     // each clock only ticks while the relevant activity is happening
     const euDueAt = isDrivingNow ? now + drivingLeftBeforeBreak : null;
     const wtdDueAt = isWorkingNow ? now + workLeftBeforeBreak : null;
@@ -759,12 +777,12 @@ function computeCompliance(rawSegments, now) {
         const short1 = Math.max(0, RULES.wtdBreakTier1 - qualifyingBreakTotal);
         if (short1 > 0) {
             candidates.push({ at: now + tierLeft1, rule: 'WTD 30m total by the 6h mark',
-                left: tierLeft1, need: short1 });
+                left: tierLeft1, need: Math.max(RULES.wtdMinBreakPart, short1) });
         }
         const short2 = Math.max(0, RULES.wtdBreakTier2 - qualifyingBreakTotal);
         if (short2 > 0) {
             candidates.push({ at: now + tierLeft2, rule: 'WTD 45m total by the 9h mark',
-                left: tierLeft2, need: short2 });
+                left: tierLeft2, need: Math.max(RULES.wtdMinBreakPart, short2) });
         }
     }
     // earliest first; on a tie show the more demanding requirement, never the lighter one
@@ -783,6 +801,8 @@ function computeCompliance(rawSegments, now) {
         tierElapsed, tierLeft1, tierLeft2, tierClockRunning, tierBasisLabel, dutySpan,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
         wtTier1At, wtTier2At, breakNeededAt9h,
+        onBreak, currentBreakDur, currentBreakCounts, bankedBreak, outstandingTotal,
+        breakNeedThis, breakRemaining, breakSatisfied, euBreakDue,
         splitBreakPending: !!firstBreakPart,
         wkStart, wkEnd, weekDriving, fortnightDriving: weekDriving + prevWeekDriving, weekDuty, extendedDaysThisWeek,
     };
@@ -817,7 +837,7 @@ function Chip({ tone = 'default', children }) {
     const t = tones[tone];
     return React.createElement("span", { className: "inline-block px-2 py-1 rounded-md text-xs font-medium", style: { background: t.bg, color: t.fg } }, children);
 }
-function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak }) {
+function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak, breakInfo }) {
     const dayEnd = dayStart + DAY;
     const CX = 130, CY = 130, R = 88, STROKE = 23;
     const clipped = segments
@@ -852,7 +872,15 @@ function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak }) {
         })(),
         isToday && (() => { const p = polar(CX, CY, R + STROKE / 2 + 2, nowAngle); return React.createElement("circle", { cx: p.x, cy: p.y, r: 4, fill: "#ECEEF0" }); })(),
         React.createElement("circle", { cx: CX, cy: CY, r: R - STROKE / 2 - 6, fill: "#14171A" }),
-        isToday && nextBreak && (() => {
+        isToday && breakInfo && breakInfo.onBreak && (() => {
+            const done = breakInfo.breakRemaining <= 0;
+            return (React.createElement("g", null,
+                React.createElement("text", { x: CX, y: CY - 24, fill: done ? '#3ECF6B' : META.break.color, fontSize: "8.5", fontWeight: "700", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'Oswald',sans-serif", letterSpacing: "1" }, done ? 'BREAK COMPLETE' : 'STAY ON BREAK'),
+                React.createElement("text", { x: CX, y: CY + 2, fill: done ? '#3ECF6B' : '#ECEEF0', fontSize: "26", fontWeight: "700", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, done ? fmtHM(breakInfo.currentBreakDur) : fmtHMS(breakInfo.breakRemaining)),
+                React.createElement("text", { x: CX, y: CY + 22, fill: "#8A93A0", fontSize: "8", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, done ? 'requirement met' : `${fmtHM(breakInfo.currentBreakDur)} of ${fmtHM(breakInfo.breakNeedThis)}`),
+                React.createElement("text", { x: CX, y: CY + 36, fill: "#5B6470", fontSize: "7.5", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, done ? '' : 'min 15m part')));
+        })(),
+        isToday && nextBreak && !(breakInfo && breakInfo.onBreak) && (() => {
             const due = nextBreak.left <= 0;
             const short = nextBreak.rule
                 .replace('WTD 6h without a break', 'WTD 6h rule')
@@ -864,7 +892,7 @@ function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak }) {
                 React.createElement("text", { x: CX, y: CY + 22, fill: "#8A93A0", fontSize: "8", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, due ? `take \u00b7 ${short}` : `due ${fmtClock(nextBreak.at)}`),
                 React.createElement("text", { x: CX, y: CY + 36, fill: "#5B6470", fontSize: "7.5", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'JetBrains Mono',monospace" }, due ? '' : short)));
         })(),
-        isToday && !nextBreak && (React.createElement("text", { x: CX, y: CY, fill: "#5B6470", fontSize: "9", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'Oswald',sans-serif", letterSpacing: "1" }, "NOT WORKING"))));
+        isToday && !nextBreak && !(breakInfo && breakInfo.onBreak) && (React.createElement("text", { x: CX, y: CY, fill: "#5B6470", fontSize: "9", textAnchor: "middle", dominantBaseline: "middle", fontFamily: "'Oswald',sans-serif", letterSpacing: "1" }, "NOT WORKING"))));
 }
 /* ------------------------------------------------------------------ */
 /* Edit entry modal                                                    */
@@ -921,6 +949,7 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
 /* ------------------------------------------------------------------ */
 function App() {
     const [tab, setTab] = useState('dashboard');
+    const [logOffset, setLogOffset] = useState(0);
     const [loaded, setLoaded] = useState(false);
     const [segments, setSegments] = useState([]);
     const [settings, setSettings] = useState({ gpsEnabled: true, gpsThresholdMph: 3, compensations: {} });
@@ -1122,7 +1151,9 @@ function App() {
         if (comp.isWorkingNow && comp.workSinceBreak > RULES.wtdMaxWorkWithoutBreak)
             a.push({ level: 'red', text: `WTD break overdue \u2014 ${fmtHM(comp.workSinceBreak)} worked without a 15 min break (6h max)` });
         if (comp.wtdBreakShortfall > 0 && comp.tierElapsed > RULES.wtdMaxWorkWithoutBreak)
-            a.push({ level: 'amber', text: `${fmtHM(comp.wtdBreakShortfall)} more break owed before you finish today \u2014 ${fmtHM(comp.wtdRequiredBreak)} total needed, not at the end of the shift` });
+            a.push(comp.onBreak
+                ? { level: 'amber', text: `On break \u2014 ${fmtHMS(comp.breakRemaining)} left to satisfy the ${fmtHM(comp.wtdRequiredBreak)} total` }
+                : { level: 'amber', text: `${fmtHM(comp.wtdBreakShortfall)} more break owed before you finish today \u2014 ${fmtHM(comp.wtdRequiredBreak)} total needed, not at the end of the shift` });
         if (comp.currentDutyDay.driving > RULES.dailyDriveExtended)
             a.push({ level: 'red', text: `Today's driving is past the 10h absolute daily max` });
         else if (comp.currentDutyDay.driving > RULES.dailyDriveNormal)
@@ -1163,15 +1194,17 @@ function App() {
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, !settings.gpsEnabled ? 'GPS off' : gpsStatus === 'active' ? `${speedKmh.toFixed(0)} km/h` : gpsStatus === 'denied' ? 'No access' : gpsStatus === 'unsupported' ? 'Unsupported' : 'Waiting…'))),
         tab === 'dashboard' && (React.createElement(DashboardTab, { now: now, segments: segments, comp: comp, alerts: alerts, currentStatus: currentStatus, currentSegment: currentSegment, dialOffset: dialOffset, setDialOffset: setDialOffset, onSwitch: st => switchStatus(st, 'manual'), onEditEntry: setEditEntry, onAddEntry: addEntry })),
         tab === 'week' && (React.createElement(WeekTab, { now: now, comp: comp, segments: segments, weekOffset: weekOffset, setWeekOffset: setWeekOffset, expandedDay: expandedDay, setExpandedDay: setExpandedDay, onEditEntry: setEditEntry, onAddEntry: addEntry, settings: settings, saveSettings: saveSettings })),
+        tab === 'log' && (React.createElement(LogTab, { now: now, segments: segments, logOffset: logOffset, setLogOffset: setLogOffset, onEditEntry: setEditEntry, onAddEntry: addEntry })),
         tab === 'rules' && React.createElement(RulesTab, null),
         tab === 'settings' && React.createElement(SettingsTab, { settings: settings, saveSettings: saveSettings, segments: segments, setSegments: setSegments }),
         toast && React.createElement("div", { className: "fixed top-2 left-1/2 -translate-x-1/2 bg-[#FF5A5A] text-white text-xs px-3 py-1.5 rounded-full z-50" }, toast),
         React.createElement("div", { className: "fixed bottom-0 left-0 right-0 border-t border-[#2A2F36] flex", style: { background: '#1B1F24' } }, [
             ['dashboard', Gauge, 'Now'],
+            ['log', ListIcon, 'Log'],
             ['week', Calendar, 'Week'],
             ['rules', BookOpen, 'Rules'],
             ['settings', SettingsIcon, 'Settings'],
-        ].map(([key, Icon, label]) => (React.createElement("button", { key: key, onClick: () => setTab(key), className: "flex-1 flex flex-col items-center gap-0.5 py-2.5" },
+        ].map(([key, Icon, label]) => (React.createElement("button", { key: key, onClick: () => setTab(key), className: "flex-1 flex flex-col items-center gap-0.5 py-2.5 px-1" },
             React.createElement(Icon, { size: 19, color: tab === key ? '#F5A623' : '#5B6470' }),
             React.createElement("span", { className: "text-[10px]", style: { color: tab === key ? '#F5A623' : '#5B6470' } }, label)))))));
 }
@@ -1218,6 +1251,9 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
             (currentStatus === 'driving' || currentStatus === 'other_work') && comp.nextBreak && (React.createElement("div", { className: "text-xs mt-1.5", style: { color: comp.nextBreak.left <= 0 ? META.break.color : '#8A93A0' } }, comp.nextBreak.left <= 0
                 ? `${fmtHM(comp.nextBreak.need)} break owed now \u2014 ${comp.nextBreak.rule}`
                 : `Break due in ${fmtHM(comp.nextBreak.left)} \u2014 ${comp.nextBreak.rule}`)),
+            currentStatus === 'break' && comp.breakNeedThis > 0 && (React.createElement("div", { className: "text-xs mt-1.5", style: { color: comp.breakRemaining <= 0 ? '#3ECF6B' : META.break.color } }, comp.breakRemaining <= 0
+                ? `Break requirement met \u2014 ${fmtHM(comp.currentBreakDur)} taken, you can go back on duty`
+                : `Stay on break another ${fmtHMS(comp.breakRemaining)} \u2014 ${fmtHM(comp.breakNeedThis)} needed, ${fmtHM(comp.currentBreakDur)} done`)),
             (currentStatus === 'break' || currentStatus === 'other_work' || currentStatus === 'poa') && (React.createElement("div", { className: "text-xs mt-1.5 text-[#8A93A0]" },
                 "Driving clock banked at ",
                 fmtHM(comp.contDriving),
@@ -1249,7 +1285,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { className: "text-xs text-[#ECEEF0] font-medium" }, isToday ? 'Today' : fmtDate(dayStart)),
                 React.createElement("button", { onClick: () => setDialOffset(o => Math.min(0, o + 1)), disabled: isToday },
                     React.createElement(ChevronRight, { size: 18, color: isToday ? '#3A4048' : '#8A93A0' }))),
-            React.createElement(Dial, { segments: segments.map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt, nextBreak: comp.nextBreak }),
+            React.createElement(Dial, { segments: segments.map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt, nextBreak: comp.nextBreak, breakInfo: isToday ? comp : null }),
             React.createElement("div", { className: "flex flex-wrap gap-x-3 gap-y-1 justify-center mt-2" }, STATUS_GRID.map(st => (React.createElement("div", { key: st, className: "flex items-center gap-1" },
                 React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: META[st].color } }),
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, META[st].short)))))),
@@ -1265,14 +1301,26 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 const headline = overdue
                     ? fmtHM(Math.max(euOver ? comp.contDriving - RULES.maxContinuousDriving : 0, wtdOver ? comp.workSinceBreak - RULES.wtdMaxWorkWithoutBreak : 0))
                     : binding ? fmtHM(binding.left) : '\u2014';
+                const onBrk = comp.onBreak && comp.breakNeedThis > 0;
                 return (React.createElement(React.Fragment, null,
-                    React.createElement("div", { className: "flex items-baseline justify-between mb-1" },
-                        React.createElement("span", { className: "text-xs text-[#8A93A0]" }, binding && binding.left <= 0 ? 'Break owed now' : binding ? 'Break due in' : 'Not currently working'),
-                        React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22,
-                                color: (binding && binding.left <= 0) || overdue ? META.break.color : '#ECEEF0' } }, binding ? (binding.left <= 0 ? fmtHM(binding.need) : fmtHM(binding.left)) : headline)),
-                    binding && (React.createElement("div", { className: "text-xs mb-3", style: { color: META.break.color } }, binding.left <= 0
-                        ? `${binding.rule} \u2014 take ${fmtHM(binding.need)} now`
-                        : `${binding.rule} \u2014 due ${fmtClock(binding.at)}, take ${fmtHM(binding.need)}`)),
+                    onBrk ? (React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "flex items-baseline justify-between mb-1" },
+                            React.createElement("span", { className: "text-xs text-[#8A93A0]" }, comp.breakRemaining <= 0 ? 'Break complete' : 'Stay on break'),
+                            React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22,
+                                    color: comp.breakRemaining <= 0 ? '#3ECF6B' : META.break.color } }, comp.breakRemaining <= 0 ? fmtHM(comp.currentBreakDur) : fmtHMS(comp.breakRemaining))),
+                        React.createElement("div", { className: "text-xs mb-1", style: { color: comp.breakRemaining <= 0 ? '#3ECF6B' : META.break.color } }, comp.breakRemaining <= 0
+                            ? `${fmtHM(comp.currentBreakDur)} taken \u2014 requirement met`
+                            : `${fmtHM(comp.currentBreakDur)} of ${fmtHM(comp.breakNeedThis)} done`),
+                        React.createElement("div", { className: "h-1.5 rounded-full bg-[#22262C] overflow-hidden mb-3" },
+                            React.createElement("div", { className: "h-full rounded-full", style: { width: Math.min(100, comp.breakNeedThis ? (comp.currentBreakDur / comp.breakNeedThis) * 100 : 0) + '%', background: comp.breakRemaining <= 0 ? '#3ECF6B' : META.break.color } })),
+                        !comp.currentBreakCounts && (React.createElement("div", { className: "text-[10px] text-[#5B6470] mb-3" }, "Nothing counts until this part reaches 15 minutes (reg 7(4)). Stopping before then banks nothing.")))) : (React.createElement(React.Fragment, null,
+                        React.createElement("div", { className: "flex items-baseline justify-between mb-1" },
+                            React.createElement("span", { className: "text-xs text-[#8A93A0]" }, binding && binding.left <= 0 ? 'Break owed now' : binding ? 'Break due in' : 'Not currently working'),
+                            React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22,
+                                    color: (binding && binding.left <= 0) || overdue ? META.break.color : '#ECEEF0' } }, binding ? (binding.left <= 0 ? fmtHM(binding.need) : fmtHM(binding.left)) : headline)),
+                        binding && (React.createElement("div", { className: "text-xs mb-3", style: { color: META.break.color } }, binding.left <= 0
+                            ? `${binding.rule} \u2014 take ${fmtHM(binding.need)} now`
+                            : `${binding.rule} \u2014 due ${fmtClock(binding.at)}, take ${fmtHM(binding.need)}`)))),
                     [
                         { label: 'WTD \u00b7 work since break', used: comp.workSinceBreak, max: RULES.wtdMaxWorkWithoutBreak,
                             live: comp.isWorkingNow, note: 'max 6h work without a break' },
@@ -1566,6 +1614,57 @@ function RulesTab() {
 /* ------------------------------------------------------------------ */
 /* Settings Tab                                                        */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Activity Sheet Tab                                                  */
+/* ------------------------------------------------------------------ */
+function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntry }) {
+    const base = new Date(now);
+    base.setHours(0, 0, 0, 0);
+    const dayStart = base.getTime() + logOffset * DAY;
+    const dayEnd = dayStart + DAY;
+    const isToday = logOffset === 0;
+    const rows = segments
+        .map(s => Object.assign({}, s, { _start: new Date(s.start).getTime(),
+            _end: s.end ? new Date(s.end).getTime() : now, open: !s.end }))
+        .filter(s => s._end > dayStart && s._start < dayEnd)
+        .sort((a, b) => a._start - b._start);
+    const totals = {};
+    rows.forEach(s => {
+        const from = Math.max(s._start, dayStart), to = Math.min(s._end, dayEnd);
+        totals[s.status] = (totals[s.status] || 0) + Math.max(0, to - from);
+    });
+    const dayLabel = isToday ? 'Today'
+        : new Date(dayStart).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+    return (React.createElement("div", { className: "px-4 pt-4 pb-20" },
+        React.createElement("div", { className: "flex items-center justify-between mb-3" },
+            React.createElement("button", { onClick: () => setLogOffset(logOffset - 1), className: "px-3 py-1.5 rounded-lg text-[#8A93A0]", style: { background: '#1B1F24' } }, "\u2039"),
+            React.createElement("span", { className: "text-sm font-semibold text-[#ECEEF0]" }, dayLabel),
+            React.createElement("button", { onClick: () => logOffset < 0 && setLogOffset(logOffset + 1), className: "px-3 py-1.5 rounded-lg", style: { background: '#1B1F24', color: logOffset < 0 ? '#8A93A0' : '#2A2F36' } }, "\u203A")),
+        React.createElement("div", { className: "flex flex-wrap gap-x-3 gap-y-1 mb-3 px-1" }, STATUS_GRID.filter(st => totals[st]).map(st => (React.createElement("div", { key: st, className: "flex items-center gap-1.5" },
+            React.createElement("span", { className: "inline-block w-2 h-2 rounded-full", style: { background: META[st].color } }),
+            React.createElement("span", { className: "text-[11px] text-[#8A93A0]" }, META[st].short),
+            React.createElement("span", { className: "text-[11px] text-[#ECEEF0]", style: { fontFamily: "'JetBrains Mono',monospace" } }, fmtHM(totals[st])))))),
+        rows.length === 0 && (React.createElement("div", { className: "text-center text-xs text-[#5B6470] py-8" }, "Nothing logged on this day.")),
+        React.createElement("div", { className: "rounded-xl overflow-hidden", style: { background: '#1B1F24', border: '1px solid #22262C' } }, rows.map(s => {
+            const m = META[s.status] || META.off;
+            const RIcon = m.icon;
+            const from = Math.max(s._start, dayStart), to = Math.min(s._end, dayEnd);
+            const dur = Math.max(0, to - from);
+            return (React.createElement("button", { key: s.id, onClick: () => onEditEntry(Object.assign({}, s)), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
+                React.createElement("span", { className: "shrink-0 flex items-center justify-center rounded-md w-11 h-11", style: { background: '#14171A', border: `1px solid ${m.color}` } },
+                    React.createElement(RIcon, { size: 18, color: m.color })),
+                React.createElement("span", { className: "flex-1" },
+                    React.createElement("span", { className: "flex items-baseline justify-between" },
+                        React.createElement("span", { className: "text-sm font-medium", style: { color: m.color } }, m.short, s.open ? ' \u00b7 running' : ''),
+                        React.createElement("span", { className: "text-sm text-[#ECEEF0]", style: { fontFamily: "'JetBrains Mono',monospace" } }, fmtHM(dur))),
+                    React.createElement("span", { className: "flex items-baseline justify-between mt-0.5" },
+                        React.createElement("span", { className: "text-[11px] text-[#8A93A0]", style: { fontFamily: "'JetBrains Mono',monospace" } },
+                            fmtClock(from), " \u2013 ", s.open ? 'now' : fmtClock(to)),
+                        React.createElement("span", { className: "text-[10px] text-[#5B6470]" }, s.source === 'gps' ? 'GPS' : 'manual')))));
+        })),
+        React.createElement("button", { onClick: () => onAddEntry('other_work', isToday ? Date.now() : dayStart + 9 * HOUR), className: "w-full mt-3 py-2.5 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } }, "+ Add entry to this day"),
+        React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-2" }, "Tap any row to change its times or status. This is your own record \u2014 your tachograph remains the legal one.")));
+}
 function SettingsTab({ settings, saveSettings, segments, setSegments }) {
     const [confirmReset, setConfirmReset] = useState(false);
     function exportCsv() {

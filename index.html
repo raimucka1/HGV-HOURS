@@ -6,6 +6,57 @@
 <meta name="theme-color" content="#14171A">
 <title>HGV Hours</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23F5A623' stroke-width='2'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Ccircle cx='12' cy='12' r='2.6'/%3E%3Cpath d='M12 14.6V21M9.5 11.2 3.4 9.4M14.5 11.2l6.1-1.8'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+<script>
+/* ------------------------------------------------------------------ *
+ * Dependencies, started as early as possible.                         *
+ * Cached copies run synchronously right here, so a normal load never   *
+ * touches the network. A cold load fetches both files in parallel.     *
+ * ------------------------------------------------------------------ */
+window.__hgv = { ready: false, promise: null, error: null };
+(function () {
+  var LIB = 'hgvhours:lib:';
+  var DEPS = [
+    { key: 'react-18', url: 'https://unpkg.com/react@18/umd/react.production.min.js' },
+    { key: 'react-dom-18', url: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js' }
+  ];
+  function exec(code) {
+    var el = document.createElement('script');
+    el.text = code;
+    (document.head || document.documentElement).appendChild(el);
+  }
+  var hits = DEPS.map(function (d) {
+    try { return localStorage.getItem(LIB + d.key); } catch (e) { return null; }
+  });
+  if (hits[0] && hits[1]) {
+    try {
+      exec(hits[0]); exec(hits[1]);
+      window.__hgv.ready = true;
+      return;
+    } catch (e) {
+      for (var i = 0; i < DEPS.length; i++) {
+        try { localStorage.removeItem(LIB + DEPS[i].key); } catch (e2) {}
+      }
+    }
+  }
+  window.__hgv.promise = Promise.all(DEPS.map(function (d) {
+    return fetch(d.url).then(function (r) {
+      if (!r.ok) throw new Error(d.key + ': HTTP ' + r.status);
+      return r.text();
+    });
+  })).then(function (codes) {
+    for (var i = 0; i < codes.length; i++) {
+      try { localStorage.setItem(LIB + DEPS[i].key, codes[i]); } catch (e) {}
+      exec(codes[i]);
+    }
+    window.__hgv.ready = true;
+  }).catch(function (err) {
+    window.__hgv.error = 'Could not load React, and nothing is cached yet.\n\n'
+      + 'Open the app once while you have signal. After that it works offline.\n\n('
+      + (err && err.message ? err.message : err) + ')';
+  });
+})();
+</script>
 <style>
 /* Static replacement for the Tailwind CDN — only the utilities this app uses. */
 *,::before,::after{box-sizing:border-box;border-width:0;border-style:solid;border-color:currentColor}
@@ -735,6 +786,10 @@ function computeCompliance(rawSegments, now) {
     const wtdRequiredBreak = tierElapsed > RULES.wtdWorkTier2 ? RULES.wtdBreakTier2
         : tierElapsed > RULES.wtdMaxWorkWithoutBreak ? RULES.wtdBreakTier1 : 0;
     const wtdBreakShortfall = Math.max(0, wtdRequiredBreak - qualifyingBreakTotal);
+    /* What you must actually sit for. A shortfall under 15 minutes still means a
+       full 15-minute part, because a shorter one counts for nothing (reg 7(4)). */
+    const wtdBreakToTake = wtdBreakShortfall > 0
+        ? Math.max(RULES.wtdMinBreakPart, wtdBreakShortfall) : 0;
     const workLeftBeforeBreak = Math.max(0, RULES.wtdMaxWorkWithoutBreak - workSinceBreak);
     /* The tier marks keep running through breaks, so they are only frozen while
        on POA or once the shift has ended at a rest. */
@@ -800,7 +855,7 @@ function computeCompliance(rawSegments, now) {
         workSinceBreak, workLeftBeforeBreak, todayWorking,
         tierElapsed, tierLeft1, tierLeft2, tierClockRunning, tierBasisLabel, dutySpan,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
-        wtTier1At, wtTier2At, breakNeededAt9h,
+        wtTier1At, wtTier2At, breakNeededAt9h, wtdBreakToTake,
         onBreak, currentBreakDur, currentBreakCounts, bankedBreak, outstandingTotal,
         breakNeedThis, breakRemaining, breakSatisfied, euBreakDue,
         splitBreakPending: !!firstBreakPart,
@@ -1153,7 +1208,7 @@ function App() {
         if (comp.wtdBreakShortfall > 0 && comp.tierElapsed > RULES.wtdMaxWorkWithoutBreak)
             a.push(comp.onBreak
                 ? { level: 'amber', text: `On break \u2014 ${fmtHMS(comp.breakRemaining)} left to satisfy the ${fmtHM(comp.wtdRequiredBreak)} total` }
-                : { level: 'amber', text: `${fmtHM(comp.wtdBreakShortfall)} more break owed before you finish today \u2014 ${fmtHM(comp.wtdRequiredBreak)} total needed, not at the end of the shift` });
+                : { level: 'amber', text: `Take ${fmtHM(comp.wtdBreakToTake)} more break before you finish today \u2014 ${fmtHM(comp.wtdRequiredBreak)} total needed, and not at the end of the shift` });
         if (comp.currentDutyDay.driving > RULES.dailyDriveExtended)
             a.push({ level: 'red', text: `Today's driving is past the 10h absolute daily max` });
         else if (comp.currentDutyDay.driving > RULES.dailyDriveNormal)
@@ -1243,11 +1298,10 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { style: { fontFamily: "'Oswald',sans-serif", fontWeight: 600, fontSize: 22, color: meta.color } }, meta.label),
                 currentSegment && !currentSegment.end && (React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22, color: '#ECEEF0' } }, fmtHMS(elapsed)))),
             restPreview && React.createElement("div", { className: "text-xs mt-1.5", style: { color: meta.color } }, restPreview),
-            currentSegment && (React.createElement("div", { className: "flex gap-2 mt-3 pt-3 border-t border-[#22262C]" },
-                !currentSegment.end && (React.createElement("button", { onClick: () => onEditEntry(Object.assign({}, currentSegment)), className: "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } },
+            currentSegment && !currentSegment.end && (React.createElement("div", { className: "flex gap-2 mt-3 pt-3 border-t border-[#22262C]" },
+                React.createElement("button", { onClick: () => onEditEntry(Object.assign({}, currentSegment)), className: "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } },
                     React.createElement(Pencil, { size: 13 }),
-                    " Adjust start time")),
-                React.createElement("button", { onClick: () => onAddEntry('break', Date.now()), className: "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } }, "+ Insert entry"))),
+                    " Adjust this entry"))),
             (currentStatus === 'driving' || currentStatus === 'other_work') && comp.nextBreak && (React.createElement("div", { className: "text-xs mt-1.5", style: { color: comp.nextBreak.left <= 0 ? META.break.color : '#8A93A0' } }, comp.nextBreak.left <= 0
                 ? `${fmtHM(comp.nextBreak.need)} break owed now \u2014 ${comp.nextBreak.rule}`
                 : `Break due in ${fmtHM(comp.nextBreak.left)} \u2014 ${comp.nextBreak.rule}`)),
@@ -1355,8 +1409,9 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                             { tier: '9h mark', need: RULES.wtdBreakTier2, at: comp.wtTier2At,
                                 reached: comp.tierElapsed >= RULES.wtdWorkTier2 },
                         ].map(r => {
-                            const owed = Math.max(0, r.need - comp.qualifyingBreakTotal);
-                            const met = owed <= 0;
+                            const gap = Math.max(0, r.need - comp.qualifyingBreakTotal);
+                            const met = gap <= 0;
+                            const take = met ? 0 : Math.max(RULES.wtdMinBreakPart, gap);
                             return (React.createElement("div", { key: r.tier, className: "flex justify-between text-[11px] py-0.5" },
                                 React.createElement("span", { className: "text-[#5B6470]" },
                                     r.tier,
@@ -1365,7 +1420,8 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                                     " total",
                                     r.reached ? ' (reached)' : r.at ? ` at ${fmtClock(r.at)}` : ''),
                                 React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace",
-                                        color: met ? '#3ECF6B' : r.reached ? '#F5A623' : '#8A93A0' } }, met ? 'met' : `${fmtHM(owed)} owed`)));
+                                        color: met ? '#3ECF6B' : r.reached ? '#F5A623' : '#8A93A0' } },
+                                    met ? `${fmtHM(comp.qualifyingBreakTotal)} taken \u00b7 met` : `take ${fmtHM(take)}`)));
                         }),
                         React.createElement("div", { className: "flex justify-between text-[11px] py-0.5 mt-1 pt-1 border-t border-[#22262C]" },
                             React.createElement("span", { className: "text-[#5B6470]" }, "Duty time counted (POA excluded)"),
@@ -1437,7 +1493,8 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                                     breakAfterStop && `. Your next break isn't due until ${fmtClock(comp.breakDueAt)}, after this.`)));
                         })()));
                 })())),
-            React.createElement(GaugeBar, { label: "Today's driving", value: comp.currentDutyDay.driving, max: RULES.dailyDriveExtended, color: "#F5A623" }),
+            React.createElement(GaugeBar, { label: "Today's driving", value: comp.currentDutyDay.driving, max: RULES.dailyDriveExtended, color: "#F5A623",
+                extra: `${fmtHM(Math.max(0, (comp.currentDutyDay.driving > RULES.dailyDriveNormal ? RULES.dailyDriveExtended : RULES.dailyDriveNormal) - comp.currentDutyDay.driving))} left` }),
             React.createElement("div", { className: "pt-1 space-y-2" }, [
                 ['Today\u2019s working time', comp.currentDutyDay.driving + comp.currentDutyDay.otherWork, META.other_work.color],
                 ['Today\u2019s break time', comp.currentDutyDay.breakTotal, META.break.color],
@@ -1748,53 +1805,17 @@ ReactDOM.createRoot(rootEl).render(React.createElement(App));
 
 </script>
 <script>
-/* ------------------------------------------------------------------ *
- * Dependency loader with an offline cache.                            *
- * React is fetched once, stored in localStorage, and re-used from     *
- * there on every later load — so the app opens with no signal.        *
- * ------------------------------------------------------------------ */
 (function () {
-  var LIB = 'hgvhours:lib:';
-  var DEPS = [
-    { key: 'react-18', url: 'https://unpkg.com/react@18/umd/react.production.min.js' },
-    { key: 'react-dom-18', url: 'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js' }
-  ];
-  function exec(code) {
-    var el = document.createElement('script');
-    el.text = code;
-    document.head.appendChild(el);
-  }
-  function cached(key) {
-    try { return localStorage.getItem(LIB + key); } catch (e) { return null; }
-  }
-  function store(key, code) {
-    try { localStorage.setItem(LIB + key, code); } catch (e) { /* quota — run anyway */ }
-  }
-  function startApp() {
+  function start() {
+    if (window.__hgv.error) { showBootError(window.__hgv.error); return; }
     var src = document.getElementById('app-src');
     if (!src) { showBootError('App source block is missing.'); return; }
-    try {
-      exec(src.textContent);
-    } catch (e) {
-      showBootError('App failed to start:\n' + (e && e.message ? e.message : e));
-    }
+    try { var el = document.createElement('script'); el.text = src.textContent; document.head.appendChild(el); }
+    catch (e) { showBootError('App failed to start:\n' + (e && e.message ? e.message : e)); }
   }
-  function step(i) {
-    if (i >= DEPS.length) { startApp(); return; }
-    var d = DEPS[i], hit = cached(d.key);
-    if (hit) {
-      try { exec(hit); step(i + 1); return; }
-      catch (e) { try { localStorage.removeItem(LIB + d.key); } catch (e2) {} }
-    }
-    fetch(d.url)
-      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
-      .then(function (code) { store(d.key, code); exec(code); step(i + 1); })
-      .catch(function () {
-        showBootError('Could not load ' + d.key + ', and nothing is cached yet.\n\n'
-          + 'Open the app once while you have signal. After that it works offline.');
-      });
-  }
-  step(0);
+  if (window.__hgv.ready) start();
+  else if (window.__hgv.promise) window.__hgv.promise.then(start);
+  else showBootError('Dependency loader did not run.');
 })();
 </script>
 </body>

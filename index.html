@@ -607,6 +607,60 @@ function applyOverride(list, entry) {
     out.push(entry);
     return cleanSegments(out);
 }
+/* Adjust an entry that already exists. Unlike applyOverride this must never
+   destroy anything: it moves only the boundaries it shares with the entries
+   immediately before and after it, and clamps rather than swallowing them. */
+function adjustEntry(list, updated) {
+    const MIN_SEG = 60 * 1000;
+    const others = list.filter(x => x.id !== updated.id)
+        .map(x => (Object.assign({}, x)))
+        .sort((a, b) => new Date(a.start) - new Date(b.start));
+    const orig = list.find(x => x.id === updated.id);
+    const anchor = new Date((orig || updated).start).getTime();
+    let prevIdx = -1;
+    for (let i = 0; i < others.length; i++) {
+        if (new Date(others[i].start).getTime() <= anchor)
+            prevIdx = i;
+        else
+            break;
+    }
+    const prev = prevIdx >= 0 ? others[prevIdx] : null;
+    const next = others[prevIdx + 1] || null;
+    let s = new Date(updated.start).getTime();
+    let e = updated.end ? new Date(updated.end).getTime() : null;
+    // an entry with something after it cannot be left open
+    if (e == null && next)
+        e = new Date(next.start).getTime();
+    let clamped = null;
+    if (prev) {
+        const floor = new Date(prev.start).getTime() + MIN_SEG;
+        if (s < floor) {
+            s = floor;
+            clamped = `Start can't go earlier than ${fmtClock(new Date(prev.start).getTime())} without deleting the entry before it`;
+        }
+    }
+    if (next && next.end) {
+        const ceil = new Date(next.end).getTime() - MIN_SEG;
+        if (e != null && e > ceil) {
+            e = ceil;
+            clamped = `End can't go past ${fmtClock(new Date(next.end).getTime())} without deleting the entry after it`;
+        }
+    }
+    if (e != null && e <= s) {
+        e = s + MIN_SEG;
+        clamped = clamped || 'End must be after the start';
+    }
+    if (prev)
+        prev.end = new Date(s).toISOString();
+    if (next && e != null)
+        next.start = new Date(e).toISOString();
+    const rebuilt = others.slice();
+    rebuilt.splice(prevIdx + 1, 0, Object.assign(Object.assign({}, updated), {
+        start: new Date(s).toISOString(),
+        end: e == null ? null : new Date(e).toISOString(),
+    }));
+    return { segments: cleanSegments(rebuilt), clamped };
+}
 /* ------------------------------------------------------------------ */
 /* Compliance engine                                                   */
 /* ------------------------------------------------------------------ */
@@ -1122,8 +1176,19 @@ function App() {
     function saveEntry(updated) {
         const exists = segmentsRef.current.some(s => s.id === updated.id);
         const prev = exists ? segmentsRef.current.find(s => s.id === updated.id) : null;
-        const base = exists ? segmentsRef.current.filter(s => s.id !== updated.id) : segmentsRef.current;
-        const next = applyOverride(base, Object.assign(Object.assign({}, updated), { _isNew: undefined }));
+        const clean = Object.assign(Object.assign({}, updated), { _isNew: undefined });
+        let next;
+        if (exists) {
+            /* Editing something already logged adjusts boundaries only. A new
+               entry is an override and may legitimately overwrite its span. */
+            const res = adjustEntry(segmentsRef.current, clean);
+            next = res.segments;
+            if (res.clamped)
+                setToast(res.clamped);
+        }
+        else {
+            next = applyOverride(segmentsRef.current, clean);
+        }
         segmentsRef.current = next;
         setSegments(next);
         const touched = new Set([dateKey(updated.start)]);

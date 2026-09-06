@@ -526,14 +526,18 @@ function arcPath(cx, cy, r, a0, a1) {
 /*  - merges touching segments of the same status                      */
 /* ------------------------------------------------------------------ */
 const MICRO_SEGMENT_MS = 25 * 1000; // GPS blips shorter than this are noise, not duty
-function cleanSegments(list) {
+function cleanSegments(list, now) {
+    if (now == null)
+        now = Date.now();
     let arr = list
         .filter(s => s && s.start && !isNaN(new Date(s.start).getTime()))
         .map(s => (Object.assign({}, s)))
         .sort((a, b) => new Date(a.start) - new Date(b.start));
-    // an earlier segment can never stay open — close it where the next one begins
+    /* An earlier segment can't stay open once another has begun — but a booked
+       entry sitting in the future must not drag it forward. Leave it open and it
+       will close itself when that time actually arrives. */
     for (let i = 0; i < arr.length - 1; i++) {
-        if (!arr[i].end)
+        if (!arr[i].end && new Date(arr[i + 1].start).getTime() <= now)
             arr[i].end = arr[i + 1].start;
     }
     arr = arr.filter(s => {
@@ -610,7 +614,9 @@ function applyOverride(list, entry) {
 /* Adjust an entry that already exists. Unlike applyOverride this must never
    destroy anything: it moves only the boundaries it shares with the entries
    immediately before and after it, and clamps rather than swallowing them. */
-function adjustEntry(list, updated) {
+function adjustEntry(list, updated, now) {
+    if (now == null)
+        now = Date.now();
     const MIN_SEG = 60 * 1000;
     const others = list.filter(x => x.id !== updated.id)
         .map(x => (Object.assign({}, x)))
@@ -632,6 +638,7 @@ function adjustEntry(list, updated) {
     if (e == null && next)
         e = new Date(next.start).getTime();
     let clamped = null;
+
     if (prev) {
         const floor = new Date(prev.start).getTime() + MIN_SEG;
         if (s < floor) {
@@ -650,8 +657,12 @@ function adjustEntry(list, updated) {
         e = s + MIN_SEG;
         clamped = clamped || 'End must be after the start';
     }
-    if (prev)
-        prev.end = new Date(s).toISOString();
+    if (prev) {
+        /* If this entry is booked for later, the activity before it is still
+           running — leave it open so it keeps counting to now and closes itself
+           when the booked time arrives, rather than being credited in advance. */
+        prev.end = s > now ? null : new Date(s).toISOString();
+    }
     if (next && e != null)
         next.start = new Date(e).toISOString();
     const rebuilt = others.slice();
@@ -659,15 +670,34 @@ function adjustEntry(list, updated) {
         start: new Date(s).toISOString(),
         end: e == null ? null : new Date(e).toISOString(),
     }));
-    return { segments: cleanSegments(rebuilt), clamped };
+    return { segments: cleanSegments(rebuilt, now), clamped };
 }
 /* ------------------------------------------------------------------ */
 /* Compliance engine                                                   */
 /* ------------------------------------------------------------------ */
 function computeCompliance(rawSegments, now) {
-    const withEnd = [...rawSegments]
-        .sort((a, b) => new Date(a.start) - new Date(b.start))
-        .map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now })));
+    const sortedRaw = [...rawSegments].sort((a, b) => new Date(a.start) - new Date(b.start));
+    /* Anything booked ahead of the clock contributes nothing yet, and an open
+       entry runs until the next one actually starts. */
+    const withEnd = sortedRaw
+        .map((s, i) => {
+            const _start = new Date(s.start).getTime();
+            let _end = s.end ? new Date(s.end).getTime() : now;
+            if (!s.end) {
+                const nxt = sortedRaw[i + 1];
+                if (nxt) {
+                    const ns = new Date(nxt.start).getTime();
+                    if (ns <= now)
+                        _end = Math.min(_end, ns);
+                }
+            }
+            return Object.assign(Object.assign({}, s), { _start, _end });
+        })
+        .filter(s => s._start < now);
+    const bookedAhead = sortedRaw
+        .filter(s => new Date(s.start).getTime() > now)
+        .map(s => Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime() }));
+    const nextBooked = bookedAhead.length ? bookedAhead[0] : null;
     // classify daily rests (with split-rest pairing)
     const dailyRestSegs = withEnd.filter(s => s.status === 'daily_rest' && s.end);
     const consumed = new Set();
@@ -927,6 +957,7 @@ function computeCompliance(rawSegments, now) {
         tierElapsed, tierLeft1, tierLeft2, tierClockRunning, tierBasisLabel, dutySpan,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
         wtTier1At, wtTier2At, breakNeededAt9h, wtdBreakToTake, breakDueNowTotal,
+        nextBooked,
         onBreak, currentBreakDur, currentBreakCounts, bankedBreak, outstandingTotal,
         breakNeedThis, breakRemaining, breakSatisfied, euBreakDue,
         breakForced, breakClearsTotal, breakExtraForTotal,
@@ -1181,7 +1212,7 @@ function App() {
         if (exists) {
             /* Editing something already logged adjusts boundaries only. A new
                entry is an override and may legitimately overwrite its span. */
-            const res = adjustEntry(segmentsRef.current, clean);
+            const res = adjustEntry(segmentsRef.current, clean, Date.now());
             next = res.segments;
             if (res.clamped)
                 setToast(res.clamped);
@@ -1279,7 +1310,10 @@ function App() {
         return () => navigator.geolocation.clearWatch(watchId);
     }, [settings.gpsEnabled, settings.gpsThresholdMph, loaded]);
     /* ---- derived ---- */
-    const currentSegment = segments.length ? segments[segments.length - 1] : null;
+    /* The status on screen is whatever is running right now — an entry booked for
+       later must not take over the display before its time. */
+    const liveSegments = segments.filter(s => new Date(s.start).getTime() <= now);
+    const currentSegment = liveSegments.length ? liveSegments[liveSegments.length - 1] : null;
     const currentStatus = currentSegment && !currentSegment.end ? currentSegment.status : 'off';
     const comp = useMemo(() => computeCompliance(segments, now), [segments, now]);
     const alerts = useMemo(() => {
@@ -1384,6 +1418,11 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { style: { fontFamily: "'Oswald',sans-serif", fontWeight: 600, fontSize: 22, color: meta.color } }, meta.label),
                 currentSegment && !currentSegment.end && (React.createElement("span", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 22, color: '#ECEEF0' } }, fmtHMS(elapsed)))),
             restPreview && React.createElement("div", { className: "text-xs mt-1.5", style: { color: meta.color } }, restPreview),
+            comp.nextBooked && (React.createElement("div", { className: "text-xs mt-2 px-2.5 py-2 rounded-lg", style: { background: '#14171A', color: META[comp.nextBooked.status] ? META[comp.nextBooked.status].color : '#8A93A0' } },
+                META[comp.nextBooked.status] ? META[comp.nextBooked.status].short : comp.nextBooked.status,
+                " booked for ",
+                fmtClock(new Date(comp.nextBooked.start).getTime()),
+                React.createElement("span", { className: "text-[#5B6470]" }, " \u2014 starts on its own, nothing counted until then"))),
             currentSegment && !currentSegment.end && (React.createElement("div", { className: "flex gap-2 mt-3 pt-3 border-t border-[#22262C]" },
                 React.createElement("button", { onClick: () => onEditEntry(Object.assign({}, currentSegment)), className: "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } },
                     React.createElement(Pencil, { size: 13 }),
@@ -1425,7 +1464,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { className: "text-xs text-[#ECEEF0] font-medium" }, isToday ? 'Today' : fmtDate(dayStart)),
                 React.createElement("button", { onClick: () => setDialOffset(o => Math.min(0, o + 1)), disabled: isToday },
                     React.createElement(ChevronRight, { size: 18, color: isToday ? '#3A4048' : '#8A93A0' }))),
-            React.createElement(Dial, { segments: segments.map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt, nextBreak: comp.nextBreak, breakInfo: isToday ? comp : null }),
+            React.createElement(Dial, { segments: segments.filter(s => new Date(s.start).getTime() <= now).map(s => (Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime(), _end: s.end ? new Date(s.end).getTime() : now, id: s.id }))), dayStart: dayStart, isToday: isToday, now: now, breakDueAt: comp.breakDueAt, nextBreak: comp.nextBreak, breakInfo: isToday ? comp : null }),
             React.createElement("div", { className: "flex flex-wrap gap-x-3 gap-y-1 justify-center mt-2" }, STATUS_GRID.map(st => (React.createElement("div", { key: st, className: "flex items-center gap-1" },
                 React.createElement("span", { className: "w-2 h-2 rounded-full", style: { background: META[st].color } }),
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, META[st].short)))))),

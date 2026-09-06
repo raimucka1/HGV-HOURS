@@ -1288,7 +1288,10 @@ function App() {
             a.push({ level: 'red', text: `EU break overdue by ${fmtHM(comp.contDriving - RULES.maxContinuousDriving)} \u2014 45 min needed after 4h30m driving` });
         if (comp.isWorkingNow && comp.workSinceBreak > RULES.wtdMaxWorkWithoutBreak)
             a.push({ level: 'red', text: `WTD break overdue \u2014 ${fmtHM(comp.workSinceBreak)} worked without a 15 min break (6h max)` });
-        if (comp.wtdBreakShortfall > 0 && comp.tierElapsed > RULES.wtdMaxWorkWithoutBreak)
+        /* Once a rest has begun the working day is over — there is no "before you
+           finish today" left, so this stops being an instruction and would just
+           be nagging about a shift that has already ended. */
+        if (comp.wtdBreakShortfall > 0 && comp.tierElapsed > RULES.wtdMaxWorkWithoutBreak && !comp.onRest)
             a.push(comp.onBreak
                 ? { level: 'amber', text: `On break \u2014 ${fmtHMS(comp.breakRemaining)} left to satisfy the ${fmtHM(comp.wtdRequiredBreak)} total` }
                 : { level: 'amber', text: `Take ${fmtHM(comp.wtdBreakToTake)} more break before you finish today \u2014 ${fmtHM(comp.wtdRequiredBreak)} total needed, and not at the end of the shift` });
@@ -1428,8 +1431,9 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, META[st].short)))))),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("div", { className: "flex items-center justify-between mb-2" },
-                React.createElement("h3", { className: "text-xs uppercase tracking-wide text-[#8A93A0]" }, "Next break"),
-                comp.splitBreakPending && React.createElement(Chip, { tone: "amber" }, "EU split \u00B7 30m still to go")),
+                React.createElement("h3", { className: "text-xs uppercase tracking-wide text-[#8A93A0]" }, comp.onRest ? 'Last shift \u00b7 breaks' : 'Next break'),
+                !comp.onRest && comp.splitBreakPending && React.createElement(Chip, { tone: "amber" }, "EU split \u00B7 30m still to go")),
+            comp.onRest && (React.createElement("div", { className: "text-[11px] text-[#5B6470] mb-2" }, "You are on rest \u2014 these are the totals from the shift that just ended. Nothing is owed now.")),
             (() => {
                 const euOver = comp.drivingLeftBeforeBreak <= 0 && comp.contDriving > 0;
                 const wtdOver = comp.workLeftBeforeBreak <= 0 && comp.workSinceBreak > 0;

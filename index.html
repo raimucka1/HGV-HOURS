@@ -564,10 +564,25 @@ function cleanSegments(list, now) {
     return merged;
 }
 /* Insert `entry`, overriding anything already logged inside its span. */
-function applyOverride(list, entry) {
+function applyOverride(list, entry, now) {
+    if (now == null)
+        now = Date.now();
     const s = new Date(entry.start).getTime();
     const openEnded = !entry.end;
-    const e = openEnded ? Number.POSITIVE_INFINITY : new Date(entry.end).getTime();
+    /* A running entry has no end, but it must not reach forward over something
+       already booked for later — starting an activity now should never wipe a
+       rest you have scheduled. It runs until that booking begins. */
+    let openLimit = Number.POSITIVE_INFINITY;
+    if (openEnded) {
+        for (const x of list) {
+            if (x.id === entry.id)
+                continue;
+            const xs = new Date(x.start).getTime();
+            if (xs > s && xs < openLimit)
+                openLimit = xs;
+        }
+    }
+    const e = openEnded ? openLimit : new Date(entry.end).getTime();
     const out = [];
     /* "You can't start the same activity twice." If this entry repeats the status
        of a segment that is still running, it's a correction of when that activity
@@ -596,7 +611,10 @@ function applyOverride(list, entry) {
             continue; // swallowed whole
         if (ys < s && ye > e) { // straddles: keep both ends
             out.push(Object.assign(Object.assign({}, seg), { end: new Date(s).toISOString() }));
-            if (isFinite(e)) {
+            /* Only a segment with a real recorded end has a tail worth keeping. One
+               that was simply still running had no end — it stopped when this entry
+               began, so it must not reappear on the far side of it. */
+            if (isFinite(e) && seg.end) {
                 out.push(Object.assign(Object.assign({}, seg), { id: uid(), start: new Date(e).toISOString(), end: seg.end }));
             }
             continue;
@@ -609,7 +627,7 @@ function applyOverride(list, entry) {
             out.push(Object.assign(Object.assign({}, seg), { start: new Date(e).toISOString(), end: seg.end })); // trim its head
     }
     out.push(entry);
-    return cleanSegments(out);
+    return cleanSegments(out, now);
 }
 /* Adjust an entry that already exists. Unlike applyOverride this must never
    destroy anything: it moves only the boundaries it shares with the entries
@@ -630,47 +648,71 @@ function adjustEntry(list, updated, now) {
         else
             break;
     }
-    const prev = prevIdx >= 0 ? others[prevIdx] : null;
-    const next = others[prevIdx + 1] || null;
     let s = new Date(updated.start).getTime();
     let e = updated.end ? new Date(updated.end).getTime() : null;
     // an entry with something after it cannot be left open
-    if (e == null && next)
-        e = new Date(next.start).getTime();
-    let clamped = null;
-
-    if (prev) {
-        const floor = new Date(prev.start).getTime() + MIN_SEG;
-        if (s < floor) {
-            s = floor;
-            clamped = `Start can't go earlier than ${fmtClock(new Date(prev.start).getTime())} without deleting the entry before it`;
-        }
-    }
-    if (next && next.end) {
-        const ceil = new Date(next.end).getTime() - MIN_SEG;
-        if (e != null && e > ceil) {
-            e = ceil;
-            clamped = `End can't go past ${fmtClock(new Date(next.end).getTime())} without deleting the entry after it`;
-        }
-    }
-    if (e != null && e <= s) {
+    const firstAfter = others[prevIdx + 1] || null;
+    if (e == null && firstAfter)
+        e = new Date(firstAfter.start).getTime();
+    if (e != null && e <= s)
         e = s + MIN_SEG;
-        clamped = clamped || 'End must be after the start';
+    /* Move the boundary as far as asked. Entries the new span passes over are
+       trimmed, and any it completely covers are removed — but never quietly:
+       the caller is told exactly what went so it can be undone. */
+    let removed = 0, trimmed = 0;
+    for (let i = prevIdx; i >= 0; i--) {
+        const p = others[i];
+        if (s <= new Date(p.start).getTime()) {
+            p._drop = true;
+            removed++;
+            continue;
+        }
+        const pe = p.end ? new Date(p.end).getTime() : null;
+        if (pe == null || pe > s) {
+            p.end = new Date(s).toISOString();
+            trimmed++;
+        }
+        break;
     }
-    if (prev) {
-        /* If this entry is booked for later, the activity before it is still
-           running — leave it open so it keeps counting to now and closes itself
-           when the booked time arrives, rather than being credited in advance. */
-        prev.end = s > now ? null : new Date(s).toISOString();
+    if (e != null) {
+        for (let i = prevIdx + 1; i < others.length; i++) {
+            const nx = others[i];
+            const ne = nx.end ? new Date(nx.end).getTime() : null;
+            if (ne != null && e >= ne) {
+                nx._drop = true;
+                removed++;
+                continue;
+            }
+            if (new Date(nx.start).getTime() < e) {
+                nx.start = new Date(e).toISOString();
+                trimmed++;
+            }
+            break;
+        }
     }
-    if (next && e != null)
-        next.start = new Date(e).toISOString();
-    const rebuilt = others.slice();
-    rebuilt.splice(prevIdx + 1, 0, Object.assign(Object.assign({}, updated), {
+    /* A booked entry hasn't happened yet, so whatever precedes it is still
+       running — leave that open rather than crediting time in advance. */
+    if (s > now) {
+        for (let i = prevIdx; i >= 0; i--) {
+            if (!others[i]._drop) {
+                others[i].end = null;
+                break;
+            }
+        }
+    }
+    const parts = [];
+    if (removed)
+        parts.push(removed + (removed === 1 ? ' entry removed' : ' entries removed'));
+    if (trimmed)
+        parts.push(trimmed + (trimmed === 1 ? ' entry trimmed' : ' entries trimmed'));
+    const clamped = removed ? ('Entry moved \u2014 ' + parts.join(', ')) : null;
+    const rebuilt = others.filter(x => !x._drop);
+    rebuilt.forEach(x => { delete x._drop; });
+    rebuilt.push(Object.assign(Object.assign({}, updated), {
         start: new Date(s).toISOString(),
         end: e == null ? null : new Date(e).toISOString(),
     }));
-    return { segments: cleanSegments(rebuilt, now), clamped };
+    return { segments: cleanSegments(rebuilt, now), clamped, removed, trimmed };
 }
 /* ------------------------------------------------------------------ */
 /* Compliance engine                                                   */
@@ -1119,6 +1161,7 @@ function App() {
     const [expandedDay, setExpandedDay] = useState(null);
     const [editEntry, setEditEntry] = useState(null);
     const [toast, setToast] = useState('');
+    const [undoSnap, setUndoSnap] = useState(null);
     const segmentsRef = useRef([]);
     const lastPosRef = useRef(null);
     const speedEmaRef = useRef(null);
@@ -1129,7 +1172,7 @@ function App() {
     const lastSampleTRef = useRef(null);
     useEffect(() => { segmentsRef.current = segments; }, [segments]);
     useEffect(() => { if (!toast)
-        return; const t = setTimeout(() => setToast(''), 4000); return () => clearTimeout(t); }, [toast]);
+        return; const t = setTimeout(() => { setToast(''); setUndoSnap(null); }, 8000); return () => clearTimeout(t); }, [toast]);
     /* ---- load from storage ---- */
     useEffect(() => {
         (async () => {
@@ -1189,7 +1232,7 @@ function App() {
         let next;
         if (newStatus) {
             const seg = { id: uid(), status: newStatus, start: new Date(at).toISOString(), end: null, source };
-            next = applyOverride(prev, seg);
+            next = applyOverride(prev, seg, at);
             touchedDates.add(dateKey(seg.start));
         }
         else {
@@ -1212,13 +1255,16 @@ function App() {
         if (exists) {
             /* Editing something already logged adjusts boundaries only. A new
                entry is an override and may legitimately overwrite its span. */
-            const res = adjustEntry(segmentsRef.current, clean, Date.now());
+            const before = segmentsRef.current;
+            const res = adjustEntry(before, clean, Date.now());
             next = res.segments;
-            if (res.clamped)
+            if (res.clamped) {
+                setUndoSnap(before);
                 setToast(res.clamped);
+            }
         }
         else {
-            next = applyOverride(segmentsRef.current, clean);
+            next = applyOverride(segmentsRef.current, clean, Date.now());
         }
         segmentsRef.current = next;
         setSegments(next);
@@ -1372,7 +1418,9 @@ function App() {
         tab === 'log' && (React.createElement(LogTab, { now: now, segments: segments, logOffset: logOffset, setLogOffset: setLogOffset, onEditEntry: setEditEntry, onAddEntry: addEntry })),
         tab === 'rules' && React.createElement(RulesTab, null),
         tab === 'settings' && React.createElement(SettingsTab, { settings: settings, saveSettings: saveSettings, segments: segments, setSegments: setSegments }),
-        toast && React.createElement("div", { className: "fixed top-2 left-1/2 -translate-x-1/2 bg-[#FF5A5A] text-white text-xs px-3 py-1.5 rounded-full z-50" }, toast),
+        toast && React.createElement("div", { className: "fixed top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-[#FF5A5A] text-white text-xs px-3 py-1.5 rounded-full z-50 max-w-[260px]" },
+            React.createElement("span", null, toast),
+            undoSnap && React.createElement("button", { onClick: () => { setSegments(undoSnap); setUndoSnap(null); setToast('Change undone'); }, className: "shrink-0 font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-white text-[#FF5A5A]" }, "Undo")),
         React.createElement("div", { className: "fixed bottom-0 left-0 right-0 border-t border-[#2A2F36] flex", style: { background: '#1B1F24' } }, [
             ['dashboard', Gauge, 'Now'],
             ['log', ListIcon, 'Log'],

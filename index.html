@@ -533,13 +533,9 @@ function cleanSegments(list, now) {
         .filter(s => s && s.start && !isNaN(new Date(s.start).getTime()))
         .map(s => (Object.assign({}, s)))
         .sort((a, b) => new Date(a.start) - new Date(b.start));
-    /* An earlier segment can't stay open once another has begun — but a booked
-       entry sitting in the future must not drag it forward. Leave it open and it
-       will close itself when that time actually arrives. */
-    for (let i = 0; i < arr.length - 1; i++) {
-        if (!arr[i].end && new Date(arr[i + 1].start).getTime() <= now)
-            arr[i].end = arr[i + 1].start;
-    }
+    /* Throw out impossible entries and GPS blips FIRST. If this ran after the
+       loop below, a running activity could be closed against a blip that is then
+       deleted — leaving nothing running and silently logging nothing at all. */
     arr = arr.filter(s => {
         if (!s.end)
             return true;
@@ -550,6 +546,13 @@ function cleanSegments(list, now) {
             return false; // GPS blip
         return true;
     });
+    /* An earlier segment can't stay open once another has begun — but a booked
+       entry sitting in the future must not drag it forward. Leave it open and it
+       will close itself when that time actually arrives. */
+    for (let i = 0; i < arr.length - 1; i++) {
+        if (!arr[i].end && new Date(arr[i + 1].start).getTime() <= now)
+            arr[i].end = arr[i + 1].start;
+    }
     const merged = [];
     for (const s of arr) {
         const last = merged[merged.length - 1];
@@ -584,6 +587,11 @@ function applyOverride(list, entry, now) {
     }
     const e = openEnded ? openLimit : new Date(entry.end).getTime();
     const out = [];
+    /* Trimming a segment to make room for this one. If the new entry is booked
+       for later and the segment is still running, it must stay running — closing
+       it now would credit the time early and leave you logged as nothing at all
+       until the booking arrives. */
+    const trimTo = seg => (!seg.end && s > now) ? null : new Date(s).toISOString();
     /* "You can't start the same activity twice." If this entry repeats the status
        of a segment that is still running, it's a correction of when that activity
        began — drop the old one and let whatever came before it run up to the new
@@ -610,7 +618,7 @@ function applyOverride(list, entry, now) {
         if (ys >= s && ye <= e)
             continue; // swallowed whole
         if (ys < s && ye > e) { // straddles: keep both ends
-            out.push(Object.assign(Object.assign({}, seg), { end: new Date(s).toISOString() }));
+            out.push(Object.assign(Object.assign({}, seg), { end: trimTo(seg) }));
             /* Only a segment with a real recorded end has a tail worth keeping. One
                that was simply still running had no end — it stopped when this entry
                began, so it must not reappear on the far side of it. */
@@ -620,7 +628,7 @@ function applyOverride(list, entry, now) {
             continue;
         }
         if (ys < s) {
-            out.push(Object.assign(Object.assign({}, seg), { end: new Date(s).toISOString() }));
+            out.push(Object.assign(Object.assign({}, seg), { end: trimTo(seg) }));
             continue;
         } // trim its tail
         if (isFinite(e))
@@ -733,7 +741,11 @@ function computeCompliance(rawSegments, now) {
                         _end = Math.min(_end, ns);
                 }
             }
-            return Object.assign(Object.assign({}, s), { _start, _end });
+            /* Finished means "something later has started", not merely "an end was
+               written". A rest that is still open in storage because a booked shift
+               follows it has still ended once that shift begins. */
+            const _closed = !!s.end || _end < now;
+            return Object.assign(Object.assign({}, s), { _start, _end, _closed });
         })
         .filter(s => s._start < now);
     const bookedAhead = sortedRaw
@@ -741,7 +753,7 @@ function computeCompliance(rawSegments, now) {
         .map(s => Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime() }));
     const nextBooked = bookedAhead.length ? bookedAhead[0] : null;
     // classify daily rests (with split-rest pairing)
-    const dailyRestSegs = withEnd.filter(s => s.status === 'daily_rest' && s.end);
+    const dailyRestSegs = withEnd.filter(s => s.status === 'daily_rest' && s._closed);
     const consumed = new Set();
     const dailyRestClassified = [];
     for (let i = 0; i < dailyRestSegs.length; i++) {
@@ -777,7 +789,7 @@ function computeCompliance(rawSegments, now) {
         dailyRestClassified.push({ seg: a, cls: 'short', dur: aDur });
     }
     // weekly rests
-    const weeklyRestSegs = withEnd.filter(s => s.status === 'weekly_rest' && s.end).map(s => {
+    const weeklyRestSegs = withEnd.filter(s => s.status === 'weekly_rest' && s._closed).map(s => {
         const dur = s._end - s._start;
         const cls = dur >= RULES.weeklyRestNormal ? 'regular' : dur >= RULES.weeklyRestReducedMin ? 'reduced' : 'short';
         return { seg: s, dur, cls };
@@ -797,7 +809,7 @@ function computeCompliance(rawSegments, now) {
         .filter(s => s.status === 'weekly_rest' && lastWeeklyRestEnd != null && s._start >= lastWeeklyRestEnd)
         .map(s => s._start);
     const nextWeeklyRestStart = wrStartsAfterLast.length ? Math.min.apply(null, wrStartsAfterLast) : null;
-    const ongoingWeeklyRest = withEnd.find(s => s.status === 'weekly_rest' && !s.end) || null;
+    const ongoingWeeklyRest = withEnd.find(s => s.status === 'weekly_rest' && !s._closed) || null;
     const weeklyRestInProgress = !!ongoingWeeklyRest;
     const weeklyRestStartedLate = weeklyRestDeadline != null && nextWeeklyRestStart != null
         && nextWeeklyRestStart > weeklyRestDeadline;
@@ -812,7 +824,7 @@ function computeCompliance(rawSegments, now) {
     const reducedDailyCount = dailyRestClassified.filter(c => c.seg._start >= sinceWR && c.cls === 'reduced').length;
     const shortDailyRests = dailyRestClassified.filter(c => c.seg._start >= sinceWR && c.cls === 'short');
     // duty days, split at qualifying (>=9h) rest boundaries
-    const boundaryIds = new Set(withEnd.filter(s => (s.status === 'daily_rest' || s.status === 'weekly_rest') && s.end && (s._end - s._start) >= RULES.dailyRestReducedMin).map(s => s.id));
+    const boundaryIds = new Set(withEnd.filter(s => (s.status === 'daily_rest' || s.status === 'weekly_rest') && s._closed && (s._end - s._start) >= RULES.dailyRestReducedMin).map(s => s.id));
     const dutyDays = [];
     let bucket = { segs: [] };
     for (const s of withEnd) {
@@ -1869,6 +1881,30 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         const from = Math.max(s._start, dayStart), to = Math.min(s._end, dayEnd);
         totals[s.status] = (totals[s.status] || 0) + Math.max(0, to - from);
     });
+    /* Unlogged holes between entries. These are not an error — nothing was
+       recorded, so nothing is claimed — but they are easy to miss by eye, so
+       they get their own row you can tap to fill. */
+    const GAP_MIN = 60 * 1000;
+    const withGaps = [];
+    let gapTotal = 0;
+    rows.forEach((s, i) => {
+        const prevRow = rows[i - 1];
+        const from = prevRow ? Math.min(prevRow._end, dayEnd) : dayStart;
+        const to = Math.max(s._start, dayStart);
+        if (to - from >= GAP_MIN) {
+            gapTotal += to - from;
+            withGaps.push({ _gap: true, id: 'gap' + i, _start: from, _end: to });
+        }
+        withGaps.push(s);
+    });
+    const lastRow = rows[rows.length - 1];
+    if (lastRow && !lastRow.open) {
+        const tail = Math.min(isToday ? now : dayEnd, dayEnd) - Math.min(lastRow._end, dayEnd);
+        if (tail >= GAP_MIN) {
+            gapTotal += tail;
+            withGaps.push({ _gap: true, id: 'gapEnd', _start: lastRow._end, _end: Math.min(isToday ? now : dayEnd, dayEnd) });
+        }
+    }
     const dayLabel = isToday ? 'Today'
         : new Date(dayStart).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
     return (React.createElement("div", { className: "px-4 pt-4 pb-20" },
@@ -1879,9 +1915,26 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         React.createElement("div", { className: "flex flex-wrap gap-x-3 gap-y-1 mb-3 px-1" }, STATUS_GRID.filter(st => totals[st]).map(st => (React.createElement("div", { key: st, className: "flex items-center gap-1.5" },
             React.createElement("span", { className: "inline-block w-2 h-2 rounded-full", style: { background: META[st].color } }),
             React.createElement("span", { className: "text-[11px] text-[#8A93A0]" }, META[st].short),
-            React.createElement("span", { className: "text-[11px] text-[#ECEEF0]", style: { fontFamily: "'JetBrains Mono',monospace" } }, fmtHM(totals[st])))))),
+            React.createElement("span", { className: "text-[11px] text-[#ECEEF0]", style: { fontFamily: "'JetBrains Mono',monospace" } }, fmtHM(totals[st]))))),
+            gapTotal > 0 && (React.createElement("div", { className: "flex items-center gap-1.5" },
+                React.createElement("span", { className: "inline-block w-2 h-2 rounded-full", style: { border: '1px dashed #8A93A0' } }),
+                React.createElement("span", { className: "text-[11px] text-[#8A93A0]" }, "Unlogged"),
+                React.createElement("span", { className: "text-[11px]", style: { fontFamily: "'JetBrains Mono',monospace", color: '#F5A623' } }, fmtHM(gapTotal))))),
         rows.length === 0 && (React.createElement("div", { className: "text-center text-xs text-[#5B6470] py-8" }, "Nothing logged on this day.")),
-        React.createElement("div", { className: "rounded-xl overflow-hidden", style: { background: '#1B1F24', border: '1px solid #22262C' } }, rows.map(s => {
+        React.createElement("div", { className: "rounded-xl overflow-hidden", style: { background: '#1B1F24', border: '1px solid #22262C' } }, withGaps.map(s => {
+            if (s._gap) {
+                return (React.createElement("button", { key: s.id, onClick: () => onAddEntry('other_work', s._start, s._end), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
+                    React.createElement("span", { className: "shrink-0 flex items-center justify-center rounded-md w-11 h-11", style: { background: '#14171A', border: '1px dashed #5B6470' } },
+                        React.createElement("span", { className: "text-[#5B6470] text-sm" }, "?")),
+                    React.createElement("span", { className: "flex-1" },
+                        React.createElement("span", { className: "flex items-baseline justify-between" },
+                            React.createElement("span", { className: "text-sm font-medium", style: { color: '#F5A623' } }, "Unlogged \u2014 tap to fill"),
+                            React.createElement("span", { className: "text-sm", style: { fontFamily: "'JetBrains Mono',monospace", color: '#F5A623' } }, fmtHM(s._end - s._start))),
+                        React.createElement("span", { className: "flex items-baseline justify-between mt-0.5" },
+                            React.createElement("span", { className: "text-[11px] text-[#8A93A0]", style: { fontFamily: "'JetBrains Mono',monospace" } },
+                                fmtClock(s._start), " \u2013 ", fmtClock(s._end)),
+                            React.createElement("span", { className: "text-[10px] text-[#5B6470]" }, "nothing recorded")))));
+            }
             const m = META[s.status] || META.off;
             const RIcon = m.icon;
             const from = Math.max(s._start, dayStart), to = Math.min(s._end, dayEnd);

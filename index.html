@@ -553,6 +553,9 @@ function cleanSegments(list, now) {
         if (!arr[i].end && new Date(arr[i + 1].start).getTime() <= now)
             arr[i].end = arr[i + 1].start;
     }
+    /* Closing an entry against the next one can itself produce a zero-length
+       entry — two taps in the same minute, for instance — so sweep again. */
+    arr = arr.filter(s => !s.end || new Date(s.end).getTime() > new Date(s.start).getTime());
     const merged = [];
     for (const s of arr) {
         const last = merged[merged.length - 1];
@@ -570,6 +573,10 @@ function cleanSegments(list, now) {
 function applyOverride(list, entry, now) {
     if (now == null)
         now = Date.now();
+    /* Close off anything left open that a later entry has already overtaken.
+       Without this, an entry still marked as running can be trimmed to the new
+       start and end up overlapping a booking that began in the meantime. */
+    list = cleanSegments(list, now);
     const s = new Date(entry.start).getTime();
     const openEnded = !entry.end;
     /* A running entry has no end, but it must not reach forward over something
@@ -714,13 +721,36 @@ function adjustEntry(list, updated, now) {
     if (trimmed)
         parts.push(trimmed + (trimmed === 1 ? ' entry trimmed' : ' entries trimmed'));
     const clamped = removed ? ('Entry moved \u2014 ' + parts.join(', ')) : null;
+    /* Moving a start later frees up time that belonged to something. Report it so
+       the caller can ask what it was, instead of leaving a silent hole. */
+    let gap = null;
+    for (let i = prevIdx; i >= 0; i--) {
+        const p = others[i];
+        if (p._drop)
+            continue;
+        const pe = p.end ? new Date(p.end).getTime() : null;
+        if (pe != null && pe < s && (s - pe) >= MIN_SEG)
+            gap = { start: new Date(pe).toISOString(), end: new Date(s).toISOString() };
+        break;
+    }
+    if (!gap && e != null) {
+        for (let i = prevIdx + 1; i < others.length; i++) {
+            const nx = others[i];
+            if (nx._drop)
+                continue;
+            const ns = new Date(nx.start).getTime();
+            if (ns > e && (ns - e) >= MIN_SEG)
+                gap = { start: new Date(e).toISOString(), end: new Date(ns).toISOString() };
+            break;
+        }
+    }
     const rebuilt = others.filter(x => !x._drop);
     rebuilt.forEach(x => { delete x._drop; });
     rebuilt.push(Object.assign(Object.assign({}, updated), {
         start: new Date(s).toISOString(),
         end: e == null ? null : new Date(e).toISOString(),
     }));
-    return { segments: cleanSegments(rebuilt, now), clamped, removed, trimmed };
+    return { segments: cleanSegments(rebuilt, now), clamped, removed, trimmed, gap };
 }
 /* ------------------------------------------------------------------ */
 /* Compliance engine                                                   */
@@ -752,6 +782,25 @@ function computeCompliance(rawSegments, now) {
         .filter(s => new Date(s.start).getTime() > now)
         .map(s => Object.assign(Object.assign({}, s), { _start: new Date(s.start).getTime() }));
     const nextBooked = bookedAhead.length ? bookedAhead[0] : null;
+    /* Holes between logged entries. However they came about — an edit, a switch
+       off, a forgotten button — they are found by looking at the log itself
+       rather than by trying to catch the moment they were created. */
+    const todayStart = new Date(now);
+    todayStart.setHours(0, 0, 0, 0);
+    const dayFloor = todayStart.getTime();
+    const gaps = [];
+    for (let i = 1; i < withEnd.length; i++) {
+        const from = withEnd[i - 1]._end, to = withEnd[i]._start;
+        if (to - from >= 60 * 1000 && to > dayFloor)
+            gaps.push({ start: Math.max(from, dayFloor), end: to, dur: to - Math.max(from, dayFloor) });
+    }
+    const lastLogged = withEnd.length ? withEnd[withEnd.length - 1] : null;
+    if (lastLogged && lastLogged.end && now - lastLogged._end >= 60 * 1000 && now > dayFloor) {
+        const from = Math.max(lastLogged._end, dayFloor);
+        gaps.push({ start: from, end: now, dur: now - from, open: true });
+    }
+    const gapTotal = gaps.reduce((a, g) => a + g.dur, 0);
+    const firstGap = gaps.length ? gaps[0] : null;
     // classify daily rests (with split-rest pairing)
     const dailyRestSegs = withEnd.filter(s => s.status === 'daily_rest' && s._closed);
     const consumed = new Set();
@@ -1011,7 +1060,7 @@ function computeCompliance(rawSegments, now) {
         tierElapsed, tierLeft1, tierLeft2, tierClockRunning, tierBasisLabel, dutySpan,
         wtdRequiredBreak, qualifyingBreakTotal, wtdBreakShortfall,
         wtTier1At, wtTier2At, breakNeededAt9h, wtdBreakToTake, breakDueNowTotal,
-        nextBooked,
+        nextBooked, gaps, gapTotal, firstGap,
         onBreak, currentBreakDur, currentBreakCounts, bankedBreak, outstandingTotal,
         breakNeedThis, breakRemaining, breakSatisfied, euBreakDue,
         breakForced, breakClearsTotal, breakExtraForTotal,
@@ -1140,9 +1189,15 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
     return (React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4" },
         React.createElement("div", { className: "bg-[#1B1F24] border border-[#2A2F36] rounded-2xl w-full max-w-sm p-5" },
             React.createElement("div", { className: "flex items-center justify-between mb-4" },
-                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, isNew ? 'Add entry' : 'Edit entry'),
+                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, entry._fillGap ? 'What were you doing?' : isNew ? 'Add entry' : 'Edit entry'),
                 React.createElement("button", { onClick: onClose },
                     React.createElement(X, { size: 18, color: "#8A93A0" }))),
+            entry._fillGap && React.createElement("p", { className: "text-[11px] mb-3 leading-relaxed", style: { color: '#F5A623' } },
+                "That left ",
+                fmtClock(new Date(entry.start).getTime()),
+                " \u2013 ",
+                fmtClock(new Date(entry.end).getTime()),
+                " belonging to nothing. Pick what you were actually doing, or close to leave it unlogged."),
             React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
             React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
             React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Start"),
@@ -1260,6 +1315,7 @@ function App() {
         persistDates(touchedDates, next);
     }
     function saveEntry(updated) {
+        let openedGap = null;
         const exists = segmentsRef.current.some(s => s.id === updated.id);
         const prev = exists ? segmentsRef.current.find(s => s.id === updated.id) : null;
         const clean = Object.assign(Object.assign({}, updated), { _isNew: undefined });
@@ -1274,6 +1330,7 @@ function App() {
                 setUndoSnap(before);
                 setToast(res.clamped);
             }
+            openedGap = res.gap;
         }
         else {
             next = applyOverride(segmentsRef.current, clean, Date.now());
@@ -1286,14 +1343,22 @@ function App() {
         segmentsRef.current.forEach(x => touched.add(dateKey(x.start)));
         next.forEach(x => touched.add(dateKey(x.start)));
         persistDates(touched, next);
-        setEditEntry(null);
+        /* Moving a start later leaves the freed time belonging to nothing. Rather
+           than leave a silent hole, go straight to filling it. */
+        if (openedGap) {
+            setEditEntry({ id: uid(), status: 'other_work', start: openedGap.start,
+                end: openedGap.end, source: 'manual', _isNew: true, _fillGap: true });
+        }
+        else {
+            setEditEntry(null);
+        }
     }
-    function addEntry(status, startMs, endMs) {
+    function addEntry(status, startMs, endMs, isGapFill) {
         setEditEntry({
             id: uid(), status: status || 'other_work', source: 'manual',
             start: new Date(startMs || Date.now()).toISOString(),
             end: endMs ? new Date(endMs).toISOString() : null,
-            _isNew: true,
+            _isNew: true, _fillGap: !!isGapFill,
         });
     }
     function deleteEntry(id) {
@@ -1391,6 +1456,10 @@ function App() {
             a.push({ level: 'red', text: `Today's driving is past the 10h absolute daily max` });
         else if (comp.currentDutyDay.driving > RULES.dailyDriveNormal)
             a.push({ level: 'amber', text: `Extension used today (9\u201310h driving) \u2014 one of your 2 per week` });
+        if (comp.gapTotal > 0) {
+            a.push({ level: 'amber', action: 'fillGap',
+                text: `${fmtHM(comp.gapTotal)} unlogged today \u2014 ${comp.gaps.length > 1 ? comp.gaps.length + ' gaps, first at ' : 'at '}${fmtClock(comp.firstGap.start)}. Tap to fill it in.` });
+        }
         if (comp.weekDriving > RULES.weeklyDriveMax)
             a.push({ level: 'red', text: `This week's driving is over the 56h limit` });
         if (comp.fortnightDriving > RULES.fortnightDriveMax)
@@ -1465,9 +1534,9 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
     }
     const remainingToday = Math.max(0, RULES.dailyDriveNormal - comp.currentDutyDay.driving);
     return (React.createElement("div", { className: "px-4" },
-        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement("div", { key: i, className: "flex items-start gap-2" },
+        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement(a.action === 'fillGap' ? "button" : "div", { key: i, className: "w-full flex items-start gap-2 text-left", onClick: a.action === 'fillGap' && comp.firstGap ? () => onAddEntry('other_work', comp.firstGap.start, comp.firstGap.end, true) : undefined },
             React.createElement(AlertTriangle, { size: 14, color: a.level === 'red' ? '#FF5A5A' : '#F5A623', className: "mt-0.5 shrink-0" }),
-            React.createElement("span", { className: "text-xs", style: { color: a.level === 'red' ? '#FF5A5A' : '#F5A623' } }, a.text)))))) : (React.createElement("div", { className: "mb-3 flex items-center gap-2 rounded-xl p-2.5", style: { background: 'rgba(62,207,107,0.1)', border: '1px solid rgba(62,207,107,0.25)' } },
+            React.createElement("span", { className: "text-xs", style: { color: a.level === 'red' ? '#FF5A5A' : '#F5A623', textDecoration: a.action === 'fillGap' ? 'underline' : 'none' } }, a.text)))))) : (React.createElement("div", { className: "mb-3 flex items-center gap-2 rounded-xl p-2.5", style: { background: 'rgba(62,207,107,0.1)', border: '1px solid rgba(62,207,107,0.25)' } },
             React.createElement(CheckCircle2, { size: 14, color: "#3ECF6B" }),
             React.createElement("span", { className: "text-xs text-[#3ECF6B]" }, "All tracked limits currently OK"))),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },

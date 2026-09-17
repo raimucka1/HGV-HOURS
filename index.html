@@ -746,6 +746,23 @@ function adjustEntry(list, updated, now) {
     }
     const rebuilt = others.filter(x => !x._drop);
     rebuilt.forEach(x => { delete x._drop; });
+    /* Reclassifying part of an activity: if the status changed and the start moved
+       later, the earlier portion was still the old activity, so keep it rather
+       than blanking it. Same status means "this began later than I logged", which
+       genuinely leaves the freed time unaccounted for. */
+    const origStart = orig ? new Date(orig.start).getTime() : null;
+    const origEnd = orig && orig.end ? new Date(orig.end).getTime() : null;
+    const statusChanged = !!orig && orig.status !== updated.status;
+    if (statusChanged && origStart != null && s - origStart >= MIN_SEG) {
+        rebuilt.push(Object.assign(Object.assign({}, orig), { id: uid(),
+            start: new Date(origStart).toISOString(), end: new Date(s).toISOString() }));
+        gap = null;
+    }
+    if (statusChanged && origEnd != null && e != null && origEnd - e >= MIN_SEG) {
+        rebuilt.push(Object.assign(Object.assign({}, orig), { id: uid(),
+            start: new Date(e).toISOString(), end: new Date(origEnd).toISOString() }));
+        gap = null;
+    }
     rebuilt.push(Object.assign(Object.assign({}, updated), {
         start: new Date(s).toISOString(),
         end: e == null ? null : new Date(e).toISOString(),
@@ -1486,7 +1503,7 @@ function App() {
         * { -webkit-tap-highlight-color: transparent; }
         select { appearance: none; }
       `),
-        editEntry && React.createElement(EditEntryModal, { entry: editEntry, isNew: !!editEntry._isNew, onSave: saveEntry, onDelete: deleteEntry, onClose: () => setEditEntry(null) }),
+        editEntry && React.createElement(EditEntryModal, { key: editEntry.id, entry: editEntry, isNew: !!editEntry._isNew, onSave: saveEntry, onDelete: deleteEntry, onClose: () => setEditEntry(null) }),
         React.createElement("div", { className: "px-4 pt-5 pb-3 flex items-center justify-between" },
             React.createElement("div", { className: "flex items-center gap-2" },
                 React.createElement(Truck, { size: 20, color: "#F5A623" }),

@@ -730,7 +730,7 @@ function adjustEntry(list, updated, now) {
             continue;
         const pe = p.end ? new Date(p.end).getTime() : null;
         if (pe != null && pe < s && (s - pe) >= MIN_SEG)
-            gap = { start: new Date(pe).toISOString(), end: new Date(s).toISOString() };
+            gap = { start: new Date(pe).toISOString(), end: new Date(s).toISOString(), prevStatus: p.status };
         break;
     }
     if (!gap && e != null) {
@@ -740,7 +740,7 @@ function adjustEntry(list, updated, now) {
                 continue;
             const ns = new Date(nx.start).getTime();
             if (ns > e && (ns - e) >= MIN_SEG)
-                gap = { start: new Date(e).toISOString(), end: new Date(ns).toISOString() };
+                gap = { start: new Date(e).toISOString(), end: new Date(ns).toISOString(), prevStatus: updated.status };
             break;
         }
     }
@@ -809,12 +809,13 @@ function computeCompliance(rawSegments, now) {
     for (let i = 1; i < withEnd.length; i++) {
         const from = withEnd[i - 1]._end, to = withEnd[i]._start;
         if (to - from >= 60 * 1000 && to > dayFloor)
-            gaps.push({ start: Math.max(from, dayFloor), end: to, dur: to - Math.max(from, dayFloor) });
+            gaps.push({ start: Math.max(from, dayFloor), end: to, dur: to - Math.max(from, dayFloor),
+                prevStatus: withEnd[i - 1].status });
     }
     const lastLogged = withEnd.length ? withEnd[withEnd.length - 1] : null;
     if (lastLogged && lastLogged.end && now - lastLogged._end >= 60 * 1000 && now > dayFloor) {
         const from = Math.max(lastLogged._end, dayFloor);
-        gaps.push({ start: from, end: now, dur: now - from, open: true });
+        gaps.push({ start: from, end: now, dur: now - from, open: true, prevStatus: lastLogged.status });
     }
     const gapTotal = gaps.reduce((a, g) => a + g.dur, 0);
     const firstGap = gaps.length ? gaps[0] : null;
@@ -1209,12 +1210,30 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
                 React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, entry._fillGap ? 'What were you doing?' : isNew ? 'Add entry' : 'Edit entry'),
                 React.createElement("button", { onClick: onClose },
                     React.createElement(X, { size: 18, color: "#8A93A0" }))),
-            entry._fillGap && React.createElement("p", { className: "text-[11px] mb-3 leading-relaxed", style: { color: '#F5A623' } },
-                "That left ",
+            entry._fillGap && React.createElement("p", { className: "text-[11px] mb-2 leading-relaxed", style: { color: '#F5A623' } },
                 fmtClock(new Date(entry.start).getTime()),
                 " \u2013 ",
                 fmtClock(new Date(entry.end).getTime()),
-                " belonging to nothing. Pick what you were actually doing, or close to leave it unlogged."),
+                " has nothing logged. Tap what you were doing:"),
+            entry._fillGap && (() => {
+                /* The activity before the gap goes first: most of the time the gap
+                   is simply that activity carrying on (a rest that ran longer, say). */
+                const order = [entry.status, 'other_work', 'driving', 'poa', 'break', 'daily_rest', 'weekly_rest'];
+                const seen = new Set();
+                const picks = order.filter(st => META[st] && !seen.has(st) && seen.add(st)).slice(0, 6);
+                return React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-3" }, picks.map((st, i) => {
+                    const m = META[st];
+                    const PIcon = m.icon;
+                    return React.createElement("button", { key: st,
+                        onClick: () => onSave(Object.assign(Object.assign({}, entry), { status: st,
+                            start: fromLocalInput(start), end: end ? fromLocalInput(end) : null })),
+                        className: "flex items-center gap-2 px-3 py-2.5 rounded-xl text-left transition active:scale-95",
+                        style: { background: i === 0 ? m.color : '#14171A', border: `1px solid ${m.color}` } },
+                        React.createElement(PIcon, { size: 15, color: i === 0 ? '#14171A' : m.color }),
+                        React.createElement("span", { className: "text-sm font-medium", style: { color: i === 0 ? '#14171A' : '#ECEEF0' } },
+                            m.short, i === 0 ? ' (carried on)' : ''));
+                }));
+            })(),
             React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
             React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
             React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Start"),
@@ -1363,7 +1382,7 @@ function App() {
         /* Moving a start later leaves the freed time belonging to nothing. Rather
            than leave a silent hole, go straight to filling it. */
         if (openedGap) {
-            setEditEntry({ id: uid(), status: 'other_work', start: openedGap.start,
+            setEditEntry({ id: uid(), status: openedGap.prevStatus || 'other_work', start: openedGap.start,
                 end: openedGap.end, source: 'manual', _isNew: true, _fillGap: true });
         }
         else {
@@ -1551,7 +1570,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
     }
     const remainingToday = Math.max(0, RULES.dailyDriveNormal - comp.currentDutyDay.driving);
     return (React.createElement("div", { className: "px-4" },
-        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement(a.action === 'fillGap' ? "button" : "div", { key: i, className: "w-full flex items-start gap-2 text-left", onClick: a.action === 'fillGap' && comp.firstGap ? () => onAddEntry('other_work', comp.firstGap.start, comp.firstGap.end, true) : undefined },
+        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement(a.action === 'fillGap' ? "button" : "div", { key: i, className: "w-full flex items-start gap-2 text-left", onClick: a.action === 'fillGap' && comp.firstGap ? () => onAddEntry(comp.firstGap.prevStatus || 'other_work', comp.firstGap.start, comp.firstGap.end, true) : undefined },
             React.createElement(AlertTriangle, { size: 14, color: a.level === 'red' ? '#FF5A5A' : '#F5A623', className: "mt-0.5 shrink-0" }),
             React.createElement("span", { className: "text-xs", style: { color: a.level === 'red' ? '#FF5A5A' : '#F5A623', textDecoration: a.action === 'fillGap' ? 'underline' : 'none' } }, a.text)))))) : (React.createElement("div", { className: "mb-3 flex items-center gap-2 rounded-xl p-2.5", style: { background: 'rgba(62,207,107,0.1)', border: '1px solid rgba(62,207,107,0.25)' } },
             React.createElement(CheckCircle2, { size: 14, color: "#3ECF6B" }),
@@ -1920,7 +1939,7 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         const to = Math.max(s._start, dayStart);
         if (to - from >= GAP_MIN) {
             gapTotal += to - from;
-            withGaps.push({ _gap: true, id: 'gap' + i, _start: from, _end: to });
+            withGaps.push({ _gap: true, id: 'gap' + i, _start: from, _end: to, prevStatus: prevRow ? prevRow.status : null });
         }
         withGaps.push(s);
     });
@@ -1929,7 +1948,7 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         const tail = Math.min(isToday ? now : dayEnd, dayEnd) - Math.min(lastRow._end, dayEnd);
         if (tail >= GAP_MIN) {
             gapTotal += tail;
-            withGaps.push({ _gap: true, id: 'gapEnd', _start: lastRow._end, _end: Math.min(isToday ? now : dayEnd, dayEnd) });
+            withGaps.push({ _gap: true, id: 'gapEnd', _start: lastRow._end, _end: Math.min(isToday ? now : dayEnd, dayEnd), prevStatus: lastRow.status });
         }
     }
     const dayLabel = isToday ? 'Today'
@@ -1950,7 +1969,7 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         rows.length === 0 && (React.createElement("div", { className: "text-center text-xs text-[#5B6470] py-8" }, "Nothing logged on this day.")),
         React.createElement("div", { className: "rounded-xl overflow-hidden", style: { background: '#1B1F24', border: '1px solid #22262C' } }, withGaps.map(s => {
             if (s._gap) {
-                return (React.createElement("button", { key: s.id, onClick: () => onAddEntry('other_work', s._start, s._end), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
+                return (React.createElement("button", { key: s.id, onClick: () => onAddEntry(s.prevStatus || 'other_work', s._start, s._end, true), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
                     React.createElement("span", { className: "shrink-0 flex items-center justify-center rounded-md w-11 h-11", style: { background: '#14171A', border: '1px dashed #5B6470' } },
                         React.createElement("span", { className: "text-[#5B6470] text-sm" }, "?")),
                     React.createElement("span", { className: "flex-1" },

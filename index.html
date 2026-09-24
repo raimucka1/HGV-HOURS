@@ -1556,24 +1556,39 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
             React.createElement("span", { className: "text-xs", style: { color: a.level === 'red' ? '#FF5A5A' : '#F5A623', textDecoration: a.action === 'fillGap' ? 'underline' : 'none' } }, a.text)))))) : (React.createElement("div", { className: "mb-3 flex items-center gap-2 rounded-xl p-2.5", style: { background: 'rgba(62,207,107,0.1)', border: '1px solid rgba(62,207,107,0.25)' } },
             React.createElement(CheckCircle2, { size: 14, color: "#3ECF6B" }),
             React.createElement("span", { className: "text-xs text-[#3ECF6B]" }, "All tracked limits currently OK"))),
-        /* The two numbers that matter most, big and first. */
+        /* Two numbers per activity. Driving counts from the last qualifying break, so
+           it drops back to zero after a 45m break (or 15 + 30) and the two numbers
+           always add up to 4h30. */
         (() => {
             const drv = comp.currentDutyDay.driving;
             const ow = comp.currentDutyDay.otherWork;
-            const cap = drv > RULES.dailyDriveNormal ? RULES.dailyDriveExtended : RULES.dailyDriveNormal;
-            const drvLeft = Math.max(0, cap - drv);
+            // driving: the EU 4h30 continuous-driving clock
+            const drvToBreak = comp.drivingLeftBeforeBreak;
+            // other work: the earliest WTD point at which a break is owed
+            const wtdCands = [comp.workLeftBeforeBreak];
+            if (comp.qualifyingBreakTotal < RULES.wtdMinBreakPart)
+                wtdCands.push(comp.tierLeft1);
+            const dayTotalNeeded = comp.tierElapsed > RULES.wtdWorkTier2 ? RULES.wtdBreakTier2 : RULES.wtdBreakTier1;
+            if (comp.qualifyingBreakTotal < dayTotalNeeded)
+                wtdCands.push(comp.tierLeft2);
+            const owToBreak = Math.max(0, Math.min.apply(null, wtdCands));
             const drvLive = currentStatus === 'driving';
             const owLive = currentStatus === 'other_work';
-            const tile = (label, value, sub, color, live) => React.createElement("div", { className: "flex-1 rounded-2xl px-3 py-3", style: {
-                    background: live ? color : '#1B1F24',
-                    border: `1px solid ${live ? color : '#2A2F36'}` } },
-                React.createElement("div", { className: "text-xs uppercase tracking-wide font-semibold", style: { color: live ? '#14171A' : color } }, label),
-                React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 30, fontWeight: 700, lineHeight: 1.15,
-                        color: live ? '#14171A' : '#ECEEF0' } }, fmtHM(value)),
-                React.createElement("div", { className: "text-xs", style: { color: live ? '#14171A' : '#8A93A0' } }, sub));
+            const tile = (label, value, toBreak, color, live, sinceBreak) => {
+                const due = toBreak <= 0;
+                return React.createElement("div", { className: "flex-1 rounded-2xl px-3 py-3", style: {
+                        background: live ? color : '#1B1F24', border: `1px solid ${live ? color : '#2A2F36'}` } },
+                    React.createElement("div", { className: "text-xs uppercase tracking-wide font-semibold", style: { color: live ? '#14171A' : color } }, label),
+                    React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 30, fontWeight: 700, lineHeight: 1.15,
+                            color: live ? '#14171A' : '#ECEEF0' } }, fmtHM(value)),
+                    React.createElement("div", { className: "text-xs font-semibold", style: { color: live ? '#14171A' : due ? '#FF5A5A' : '#8A93A0' } },
+                        due ? 'Break due now' : `${fmtHM(toBreak)} to break`),
+                    sinceBreak != null && React.createElement("div", { className: "text-[11px]", style: { color: live ? '#14171A' : '#5B6470' } },
+                        `${fmtHM(sinceBreak)} since last break`));
+            };
             return React.createElement("div", { className: "flex gap-2 mb-3" },
-                tile('Driving', drv, `${fmtHM(drvLeft)} left to ${drv > RULES.dailyDriveNormal ? '10h' : '9h'}`, META.driving.color, drvLive),
-                tile('Other work', ow, `${fmtHM(drv + ow)} work in total`, META.other_work.color, owLive));
+                tile('Driving', comp.contDriving, drvToBreak, META.driving.color, drvLive),
+                tile('Other work', ow, owToBreak, META.other_work.color, owLive));
         })(),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("div", { className: "flex items-center gap-2 mb-1" },

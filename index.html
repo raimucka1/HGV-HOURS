@@ -526,6 +526,15 @@ function arcPath(cx, cy, r, a0, a1) {
 /*  - merges touching segments of the same status                      */
 /* ------------------------------------------------------------------ */
 const MICRO_SEGMENT_MS = 25 * 1000; // GPS blips shorter than this are noise, not duty
+/* Anything starting with an underscore is screen state (_isNew, _fillGap, _gap,
+   _start, _drop...). It must never be written into the log itself. */
+function stripTransient(seg) {
+    const out = {};
+    for (const k of Object.keys(seg))
+        if (k.charAt(0) !== '_')
+            out[k] = seg[k];
+    return out;
+}
 function cleanSegments(list, now) {
     if (now == null)
         now = Date.now();
@@ -1207,15 +1216,15 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
     return (React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4" },
         React.createElement("div", { className: "bg-[#1B1F24] border border-[#2A2F36] rounded-2xl w-full max-w-sm p-5" },
             React.createElement("div", { className: "flex items-center justify-between mb-4" },
-                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, entry._fillGap ? 'What were you doing?' : isNew ? 'Add entry' : 'Edit entry'),
+                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, isNew && entry._fillGap ? 'What were you doing?' : isNew ? 'Add entry' : 'Edit entry'),
                 React.createElement("button", { onClick: onClose },
                     React.createElement(X, { size: 18, color: "#8A93A0" }))),
-            entry._fillGap && React.createElement("p", { className: "text-[11px] mb-2 leading-relaxed", style: { color: '#F5A623' } },
+            isNew && entry._fillGap && React.createElement("p", { className: "text-[11px] mb-2 leading-relaxed", style: { color: '#F5A623' } },
                 fmtClock(new Date(entry.start).getTime()),
                 " \u2013 ",
                 fmtClock(new Date(entry.end).getTime()),
                 " has nothing logged. Tap what you were doing:"),
-            entry._fillGap && (() => {
+            isNew && entry._fillGap && (() => {
                 /* The activity before the gap goes first: most of the time the gap
                    is simply that activity carrying on (a rest that ran longer, say). */
                 const order = [entry.status, 'other_work', 'driving', 'poa', 'break', 'daily_rest', 'weekly_rest'];
@@ -1288,7 +1297,7 @@ function App() {
                         const r = await storage.get(k, false);
                         if (r === null || r === void 0 ? void 0 : r.value) {
                             const parsed = JSON.parse(r.value);
-                            segs.push(...(parsed.segments || []));
+                            segs.push(...(parsed.segments || []).map(stripTransient));
                         }
                     }
                     catch (e) { /* ignore missing */ }
@@ -1354,7 +1363,7 @@ function App() {
         let openedGap = null;
         const exists = segmentsRef.current.some(s => s.id === updated.id);
         const prev = exists ? segmentsRef.current.find(s => s.id === updated.id) : null;
-        const clean = Object.assign(Object.assign({}, updated), { _isNew: undefined });
+        const clean = stripTransient(updated);
         let next;
         if (exists) {
             /* Editing something already logged adjusts boundaries only. A new
@@ -1919,7 +1928,7 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
     const isToday = logOffset === 0;
     const rows = segments
         .map(s => Object.assign({}, s, { _start: new Date(s.start).getTime(),
-            _end: s.end ? new Date(s.end).getTime() : now, open: !s.end }))
+            _end: s.end ? new Date(s.end).getTime() : now, _open: !s.end }))
         .filter(s => s._end > dayStart && s._start < dayEnd)
         .sort((a, b) => a._start - b._start);
     const totals = {};
@@ -1944,7 +1953,7 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         withGaps.push(s);
     });
     const lastRow = rows[rows.length - 1];
-    if (lastRow && !lastRow.open) {
+    if (lastRow && !lastRow._open) {
         const tail = Math.min(isToday ? now : dayEnd, dayEnd) - Math.min(lastRow._end, dayEnd);
         if (tail >= GAP_MIN) {
             gapTotal += tail;
@@ -1990,11 +1999,11 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
                     React.createElement(RIcon, { size: 18, color: m.color })),
                 React.createElement("span", { className: "flex-1" },
                     React.createElement("span", { className: "flex items-baseline justify-between" },
-                        React.createElement("span", { className: "text-sm font-medium", style: { color: m.color } }, m.short, s.open ? ' \u00b7 running' : ''),
+                        React.createElement("span", { className: "text-sm font-medium", style: { color: m.color } }, m.short, s._open ? ' \u00b7 running' : ''),
                         React.createElement("span", { className: "text-sm text-[#ECEEF0]", style: { fontFamily: "'JetBrains Mono',monospace" } }, fmtHM(dur))),
                     React.createElement("span", { className: "flex items-baseline justify-between mt-0.5" },
                         React.createElement("span", { className: "text-[11px] text-[#8A93A0]", style: { fontFamily: "'JetBrains Mono',monospace" } },
-                            fmtClock(from), " \u2013 ", s.open ? 'now' : fmtClock(to)),
+                            fmtClock(from), " \u2013 ", s._open ? 'now' : fmtClock(to)),
                         React.createElement("span", { className: "text-[10px] text-[#5B6470]" }, s.source === 'gps' ? 'GPS' : 'manual')))));
         })),
         React.createElement("button", { onClick: () => onAddEntry('other_work', isToday ? Date.now() : dayStart + 9 * HOUR), className: "w-full mt-3 py-2.5 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } }, "+ Add entry to this day"),

@@ -79,7 +79,7 @@ svg{display:block;vertical-align:middle}
 .mx-auto{margin-left:auto;margin-right:auto}
 .min-h-screen{min-height:100vh}.h-full{height:100%}.w-full{width:100%}
 .max-w-sm{max-width:24rem}.max-w-\[260px\]{max-width:260px}
-.text-left{text-align:left}
+.text-left{text-align:left}.text-center{text-align:center}.py-8{padding-top:2rem;padding-bottom:2rem}
 .gap-0{gap:0px}
 .gap-x-0{column-gap:0px}
 .gap-y-0{row-gap:0px}
@@ -1185,7 +1185,40 @@ function Dial({ segments, dayStart, isToday, now, breakDueAt, nextBreak, breakIn
 /* ------------------------------------------------------------------ */
 /* Edit entry modal                                                    */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Time stepper — big buttons instead of the phone's date-time box,    */
+/* which on some Android builds won't let you edit it at all.          */
+/* ------------------------------------------------------------------ */
+function TimeStepper({ label, value, onChange, allowBlank, blankText, fallback }) {
+    const btn = { background: '#22262C', border: '1px solid #2A2F36', color: '#ECEEF0' };
+    if (!value) {
+        return React.createElement("div", { className: "mb-3" },
+            React.createElement("div", { className: "text-xs text-[#8A93A0] mb-1" }, label),
+            React.createElement("div", { className: "flex items-center justify-between rounded-lg px-3 py-2.5", style: { background: '#14171A', border: '1px solid #2A2F36' } },
+                React.createElement("span", { className: "text-sm", style: { color: '#8A93A0' } }, blankText || 'Not set'),
+                React.createElement("button", { onClick: () => onChange(toLocalInput(fallback || Date.now())), className: "text-xs font-semibold px-3 py-1.5 rounded-lg", style: { background: '#F5A623', color: '#14171A' } }, "Set time")));
+    }
+    const ms = new Date(value).getTime();
+    const shift = delta => onChange(toLocalInput(ms + delta));
+    const d = new Date(ms);
+    const dayLabel = d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+    const steps = [[-HOUR, '\u22121h'], [-10 * MIN, '\u221210'], [-MIN, '\u22121'], [MIN, '+1'], [10 * MIN, '+10'], [HOUR, '+1h']];
+    return React.createElement("div", { className: "mb-3" },
+        React.createElement("div", { className: "flex items-center justify-between mb-1" },
+            React.createElement("span", { className: "text-xs text-[#8A93A0]" }, label),
+            allowBlank && React.createElement("button", { onClick: () => onChange(''), className: "text-[11px] px-2 py-0.5 rounded-lg", style: btn }, blankText || 'Clear')),
+        React.createElement("div", { className: "rounded-lg px-2 py-2", style: { background: '#14171A', border: '1px solid #2A2F36' } },
+            React.createElement("div", { className: "flex items-center justify-between mb-1" },
+                React.createElement("button", { onClick: () => shift(-DAY), className: "px-3 py-1 rounded-lg text-sm", style: btn, "aria-label": "Previous day" }, "\u2039"),
+                React.createElement("span", { className: "text-sm text-[#C7CCD1]" }, dayLabel),
+                React.createElement("button", { onClick: () => shift(DAY), className: "px-3 py-1 rounded-lg text-sm", style: btn, "aria-label": "Next day" }, "\u203A")),
+            React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 34, fontWeight: 700, textAlign: 'center', color: '#ECEEF0', lineHeight: 1.2 } },
+                `${pad(d.getHours())}:${pad(d.getMinutes())}`),
+            React.createElement("div", { className: "grid grid-cols-6 gap-1.5 mt-1" }, steps.map(([delta, txt]) =>
+                React.createElement("button", { key: txt, onClick: () => shift(delta), className: "py-2.5 rounded-lg text-sm font-semibold transition active:scale-95", style: btn }, txt)))));
+}
 function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
+    const gapMode = !!(isNew && entry._fillGap);
     const [status, setStatus] = useState(entry.status);
     const [start, setStart] = useState(toLocalInput(entry.start));
     const [end, setEnd] = useState(entry.end ? toLocalInput(entry.end) : '');
@@ -1243,18 +1276,19 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
                             m.short, i === 0 ? ' (carried on)' : ''));
                 }));
             })(),
-            React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
-            React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
-            React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Start"),
-            React.createElement("input", { type: "datetime-local", value: start, onChange: e => { setStart(e.target.value); setErr(''); }, className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }),
-            React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "End (leave blank if still ongoing)"),
-            React.createElement("input", { type: "datetime-local", value: end, onChange: e => { setEnd(e.target.value); setErr(''); }, className: "w-full mt-1 mb-2 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }),
+            /* In a gap the buttons above ARE the status choice — a second, separate
+               status box there only contradicts them. */
+            !gapMode && React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
+            !gapMode && React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
+            gapMode && React.createElement("div", { className: "text-[11px] text-[#5B6470] mb-2" }, "Times wrong? Adjust them below first, then tap the activity above."),
+            React.createElement(TimeStepper, { label: "Start", value: start, onChange: v => { setStart(v); setErr(''); } }),
+            React.createElement(TimeStepper, { label: "End", value: end, allowBlank: true, blankText: "Still ongoing", fallback: start ? new Date(start).getTime() + 30 * MIN : Date.now(), onChange: v => { setEnd(v); setErr(''); } }),
             err && React.createElement("div", { className: "text-xs mb-2", style: { color: '#FF5A5A' } }, err),
             React.createElement("div", { className: "flex gap-2 mt-2" },
                 !isNew && (React.createElement("button", { onClick: () => onDelete(entry.id), className: "flex-1 py-2.5 rounded-xl border border-[#442] text-[#FF5A5A] flex items-center justify-center gap-1 text-sm" },
                     React.createElement(Trash2, { size: 15 }),
                     "Delete")),
-                React.createElement("button", { onClick: attemptSave, className: "flex-1 py-2.5 rounded-xl text-[#14171A] font-medium text-sm", style: { backgroundColor: '#F5A623' } }, isNew ? 'Add' : 'Save')))));
+                !gapMode && React.createElement("button", { onClick: attemptSave, className: "flex-1 py-2.5 rounded-xl text-[#14171A] font-medium text-sm", style: { backgroundColor: '#F5A623' } }, isNew ? 'Add' : 'Save')))));
 }
 /* ------------------------------------------------------------------ */
 /* Main App                                                             */

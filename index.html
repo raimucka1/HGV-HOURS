@@ -730,29 +730,35 @@ function adjustEntry(list, updated, now) {
     if (trimmed)
         parts.push(trimmed + (trimmed === 1 ? ' entry trimmed' : ' entries trimmed'));
     const clamped = removed ? ('Entry moved \u2014 ' + parts.join(', ')) : null;
-    /* Moving a start later frees up time that belonged to something. Report it so
-       the caller can ask what it was, instead of leaving a silent hole. */
-    let gap = null;
-    for (let i = prevIdx; i >= 0; i--) {
-        const p = others[i];
-        if (p._drop)
-            continue;
-        const pe = p.end ? new Date(p.end).getTime() : null;
-        if (pe != null && pe < s && (s - pe) >= MIN_SEG)
-            gap = { start: new Date(pe).toISOString(), end: new Date(s).toISOString(), prevStatus: p.status };
-        break;
+    /* The entries either side follow the edit, so editing never leaves a hole.
+       Move a start later and the entry before it runs on to meet it; pull an end
+       earlier and the entry after it starts sooner. Only neighbours that were
+       touching this entry are moved — an existing gap is not filled in. */
+    const origS = orig ? new Date(orig.start).getTime() : null;
+    const origE = orig && orig.end ? new Date(orig.end).getTime() : null;
+    const sameStatus = !orig || orig.status === updated.status;
+    if (sameStatus && origS != null && s > origS && s <= now) {
+        for (let i = prevIdx; i >= 0; i--) {
+            const p = others[i];
+            if (p._drop)
+                continue;
+            const pe = p.end ? new Date(p.end).getTime() : null;
+            if (pe != null && Math.abs(pe - origS) < MIN_SEG)
+                p.end = new Date(s).toISOString();
+            break;
+        }
     }
-    if (!gap && e != null) {
+    if (sameStatus && origE != null && e != null && e < origE) {
         for (let i = prevIdx + 1; i < others.length; i++) {
             const nx = others[i];
             if (nx._drop)
                 continue;
-            const ns = new Date(nx.start).getTime();
-            if (ns > e && (ns - e) >= MIN_SEG)
-                gap = { start: new Date(e).toISOString(), end: new Date(ns).toISOString(), prevStatus: updated.status };
+            if (Math.abs(new Date(nx.start).getTime() - origE) < MIN_SEG)
+                nx.start = new Date(e).toISOString();
             break;
         }
     }
+    const gap = null;
     const rebuilt = others.filter(x => !x._drop);
     rebuilt.forEach(x => { delete x._drop; });
     /* Reclassifying part of an activity: if the status changed and the start moved
@@ -765,12 +771,10 @@ function adjustEntry(list, updated, now) {
     if (statusChanged && origStart != null && s - origStart >= MIN_SEG) {
         rebuilt.push(Object.assign(Object.assign({}, orig), { id: uid(),
             start: new Date(origStart).toISOString(), end: new Date(s).toISOString() }));
-        gap = null;
     }
     if (statusChanged && origEnd != null && e != null && origEnd - e >= MIN_SEG) {
         rebuilt.push(Object.assign(Object.assign({}, orig), { id: uid(),
             start: new Date(e).toISOString(), end: new Date(origEnd).toISOString() }));
-        gap = null;
     }
     rebuilt.push(Object.assign(Object.assign({}, updated), {
         start: new Date(s).toISOString(),
@@ -1213,7 +1217,6 @@ function TimeBox({ label, value, onChange, hint, placeholder }) {
             style: { background: '#22262C', border: '1px solid #2A2F36', fontFamily: "'JetBrains Mono',monospace", fontSize: 26, fontWeight: 700, letterSpacing: 1 } }));
 }
 function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
-    const gapMode = !!(isNew && entry._fillGap);
     const [status, setStatus] = useState(entry.status);
     const day = toLocalInput(entry.start).slice(0, 10); // the entry's own date
     const [start, setStart] = useState(toLocalInput(entry.start).slice(11, 16));
@@ -1231,15 +1234,17 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
             const eh = parseHM(end);
             if (!eh)
                 return { error: 'That end time isn\u2019t valid \u2014 type e.g. 0420, or leave it empty.' };
+            if (eh === sh)
+                return { error: 'End is the same as the start \u2014 change one of them, or leave End empty.' };
             e = new Date(day + 'T' + eh).getTime();
-            if (e <= s)
-                e += DAY;
+            if (e < s)
+                e += DAY; // e.g. a rest from 16:21 to 03:30 the next morning
         }
         return { start: new Date(s).toISOString(), end: e == null ? null : new Date(e).toISOString() };
     }
     const endHint = (() => {
         const sh = parseHM(start), eh = parseHM(end);
-        return sh && eh && eh <= sh ? 'next day' : 'empty = still ongoing';
+        return sh && eh && eh < sh ? 'next day' : 'empty = still ongoing';
     })();
     const dayLabel = new Date(day + 'T12:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
     function attemptSave(withStatus) {
@@ -1253,37 +1258,11 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
     return (React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4" },
         React.createElement("div", { className: "bg-[#1B1F24] border border-[#2A2F36] rounded-2xl w-full max-w-sm p-5" },
             React.createElement("div", { className: "flex items-center justify-between mb-4" },
-                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, isNew && entry._fillGap ? 'What were you doing?' : isNew ? 'Add entry' : 'Edit entry'),
+                React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, isNew ? 'Add entry' : 'Edit entry'),
                 React.createElement("button", { onClick: onClose },
                     React.createElement(X, { size: 18, color: "#8A93A0" }))),
-            isNew && entry._fillGap && React.createElement("p", { className: "text-[11px] mb-2 leading-relaxed", style: { color: '#F5A623' } },
-                fmtClock(new Date(entry.start).getTime()),
-                " \u2013 ",
-                fmtClock(new Date(entry.end).getTime()),
-                " has nothing logged. Tap what you were doing:"),
-            isNew && entry._fillGap && (() => {
-                /* The activity before the gap goes first: most of the time the gap
-                   is simply that activity carrying on (a rest that ran longer, say). */
-                const order = [entry.status, 'other_work', 'driving', 'poa', 'break', 'daily_rest', 'weekly_rest'];
-                const seen = new Set();
-                const picks = order.filter(st => META[st] && !seen.has(st) && seen.add(st)).slice(0, 6);
-                return React.createElement("div", { className: "grid grid-cols-2 gap-2 mb-3" }, picks.map((st, i) => {
-                    const m = META[st];
-                    const PIcon = m.icon;
-                    return React.createElement("button", { key: st,
-                        onClick: () => attemptSave(st),
-                        className: "flex items-center gap-2 px-3 py-2.5 rounded-xl text-left transition active:scale-95",
-                        style: { background: i === 0 ? m.color : '#14171A', border: `1px solid ${m.color}` } },
-                        React.createElement(PIcon, { size: 15, color: i === 0 ? '#14171A' : m.color }),
-                        React.createElement("span", { className: "text-sm font-medium", style: { color: i === 0 ? '#14171A' : '#ECEEF0' } },
-                            m.short, i === 0 ? ' (carried on)' : ''));
-                }));
-            })(),
-            /* In a gap the buttons above ARE the status choice — a second, separate
-               status box there only contradicts them. */
-            !gapMode && React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
-            !gapMode && React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
-            gapMode && React.createElement("div", { className: "text-[11px] text-[#5B6470] mb-2" }, "Times wrong? Adjust them below first, then tap the activity above."),
+            React.createElement("label", { className: "text-xs text-[#8A93A0]" }, "Status"),
+            React.createElement("select", { value: status, onChange: e => setStatus(e.target.value), className: "w-full mt-1 mb-3 bg-[#22262C] border border-[#2A2F36] rounded-lg px-3 py-2 text-[#ECEEF0] text-sm" }, STATUS_GRID.map(s => React.createElement("option", { key: s, value: s }, META[s].label))),
             React.createElement(TimeBox, { label: "Start", hint: dayLabel, value: start, onChange: v => { setStart(v); setErr(''); } }),
             React.createElement(TimeBox, { label: "End", hint: endHint, placeholder: "still ongoing", value: end, onChange: v => { setEnd(v); setErr(''); } }),
             err && React.createElement("div", { className: "text-xs mb-2", style: { color: '#FF5A5A' } }, err),
@@ -1291,7 +1270,7 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
                 !isNew && (React.createElement("button", { onClick: () => onDelete(entry.id), className: "flex-1 py-2.5 rounded-xl border border-[#442] text-[#FF5A5A] flex items-center justify-center gap-1 text-sm" },
                     React.createElement(Trash2, { size: 15 }),
                     "Delete")),
-                !gapMode && React.createElement("button", { onClick: () => attemptSave(), className: "flex-1 py-2.5 rounded-xl text-[#14171A] font-medium text-sm", style: { backgroundColor: '#F5A623' } }, isNew ? 'Add' : 'Save')))));
+                React.createElement("button", { onClick: () => attemptSave(), className: "flex-1 py-2.5 rounded-xl text-[#14171A] font-medium text-sm", style: { backgroundColor: '#F5A623' } }, isNew ? 'Add' : 'Save')))));
 }
 /* ------------------------------------------------------------------ */
 /* Main App                                                             */
@@ -1397,7 +1376,6 @@ function App() {
         persistDates(touchedDates, next);
     }
     function saveEntry(updated) {
-        let openedGap = null;
         const exists = segmentsRef.current.some(s => s.id === updated.id);
         const prev = exists ? segmentsRef.current.find(s => s.id === updated.id) : null;
         const clean = stripTransient(updated);
@@ -1412,7 +1390,6 @@ function App() {
                 setUndoSnap(before);
                 setToast(res.clamped);
             }
-            openedGap = res.gap;
         }
         else {
             next = applyOverride(segmentsRef.current, clean, Date.now());
@@ -1427,13 +1404,7 @@ function App() {
         persistDates(touched, next);
         /* Moving a start later leaves the freed time belonging to nothing. Rather
            than leave a silent hole, go straight to filling it. */
-        if (openedGap) {
-            setEditEntry({ id: uid(), status: openedGap.prevStatus || 'other_work', start: openedGap.start,
-                end: openedGap.end, source: 'manual', _isNew: true, _fillGap: true });
-        }
-        else {
-            setEditEntry(null);
-        }
+        setEditEntry(null);
     }
     function addEntry(status, startMs, endMs, isGapFill) {
         setEditEntry({

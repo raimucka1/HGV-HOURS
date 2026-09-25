@@ -535,6 +535,12 @@ function stripTransient(seg) {
             out[k] = seg[k];
     return out;
 }
+/* The entry that ends where a gap begins, with its End moved to close the gap —
+   what opens when you tap a gap. Null if nothing ends there. */
+function gapEditTarget(list, startMs, endMs) {
+    const before = list.find(x => x.end && Math.abs(new Date(x.end).getTime() - startMs) < 60 * 1000);
+    return before ? Object.assign(Object.assign({}, before), { end: new Date(endMs).toISOString() }) : null;
+}
 function cleanSegments(list, now) {
     if (now == null)
         now = Date.now();
@@ -1406,6 +1412,17 @@ function App() {
            than leave a silent hole, go straight to filling it. */
         setEditEntry(null);
     }
+    /* Tapping an unlogged gap: open the entry just before it in the normal Edit
+       dialog, with its End already moved to where the gap ends. You see e.g.
+       "Daily Rest ... End 03:30" and press Save. If nothing sits before the gap,
+       fall back to adding a new entry covering it. */
+    function fillGap(startMs, endMs) {
+        const target = gapEditTarget(segmentsRef.current, startMs, endMs);
+        if (target)
+            setEditEntry(target);
+        else
+            addEntry('other_work', startMs, endMs);
+    }
     function addEntry(status, startMs, endMs, isGapFill) {
         setEditEntry({
             id: uid(), status: status || 'other_work', source: 'manual',
@@ -1549,7 +1566,7 @@ function App() {
                 React.createElement("span", { className: "text-[10px] text-[#8A93A0]" }, !settings.gpsEnabled ? 'GPS off' : gpsStatus === 'active' ? `${speedKmh.toFixed(0)} km/h` : gpsStatus === 'denied' ? 'No access' : gpsStatus === 'unsupported' ? 'Unsupported' : 'Waiting…'))),
         tab === 'dashboard' && (React.createElement(DashboardTab, { now: now, segments: segments, comp: comp, alerts: alerts, currentStatus: currentStatus, currentSegment: currentSegment, dialOffset: dialOffset, setDialOffset: setDialOffset, onSwitch: st => switchStatus(st, 'manual'), onEditEntry: setEditEntry, onAddEntry: addEntry })),
         tab === 'week' && (React.createElement(WeekTab, { now: now, comp: comp, segments: segments, weekOffset: weekOffset, setWeekOffset: setWeekOffset, expandedDay: expandedDay, setExpandedDay: setExpandedDay, onEditEntry: setEditEntry, onAddEntry: addEntry, settings: settings, saveSettings: saveSettings })),
-        tab === 'log' && (React.createElement(LogTab, { now: now, segments: segments, logOffset: logOffset, setLogOffset: setLogOffset, onEditEntry: setEditEntry, onAddEntry: addEntry })),
+        tab === 'log' && (React.createElement(LogTab, { now: now, segments: segments, logOffset: logOffset, setLogOffset: setLogOffset, onEditEntry: setEditEntry, onAddEntry: addEntry, onFillGap: fillGap })),
         tab === 'rules' && React.createElement(RulesTab, null),
         tab === 'settings' && React.createElement(SettingsTab, { settings: settings, saveSettings: saveSettings, segments: segments, setSegments: setSegments }),
         toast && React.createElement("div", { className: "fixed top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-[#FF5A5A] text-white text-xs px-3 py-1.5 rounded-full z-50 max-w-[260px]" },
@@ -1568,7 +1585,7 @@ function App() {
 /* ------------------------------------------------------------------ */
 /* Dashboard Tab                                                       */
 /* ------------------------------------------------------------------ */
-function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOffset, setDialOffset, onSwitch, segments, onEditEntry, onAddEntry }) {
+function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOffset, setDialOffset, onSwitch, segments, onEditEntry, onAddEntry, onFillGap }) {
     const meta = META[currentStatus];
     const Icon = meta.icon;
     const elapsed = currentSegment && !currentSegment.end ? now - new Date(currentSegment.start).getTime() : 0;
@@ -1587,7 +1604,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
     }
     const remainingToday = Math.max(0, RULES.dailyDriveNormal - comp.currentDutyDay.driving);
     return (React.createElement("div", { className: "px-4" },
-        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement(a.action === 'fillGap' ? "button" : "div", { key: i, className: "w-full flex items-start gap-2 text-left", onClick: a.action === 'fillGap' && comp.firstGap ? () => onAddEntry(comp.firstGap.prevStatus || 'other_work', comp.firstGap.start, comp.firstGap.end, true) : undefined },
+        alerts.length > 0 ? (React.createElement("div", { className: "mb-3 rounded-xl p-3 space-y-1.5", style: { background: 'rgba(255,90,90,0.1)', border: '1px solid rgba(255,90,90,0.3)' } }, alerts.map((a, i) => (React.createElement(a.action === 'fillGap' ? "button" : "div", { key: i, className: "w-full flex items-start gap-2 text-left", onClick: a.action === 'fillGap' && comp.firstGap ? () => onFillGap(comp.firstGap.start, comp.firstGap.end) : undefined },
             React.createElement(AlertTriangle, { size: 14, color: a.level === 'red' ? '#FF5A5A' : '#F5A623', className: "mt-0.5 shrink-0" }),
             React.createElement("span", { className: "text-xs", style: { color: a.level === 'red' ? '#FF5A5A' : '#F5A623', textDecoration: a.action === 'fillGap' ? 'underline' : 'none' } }, a.text)))))) : (React.createElement("div", { className: "mb-3 flex items-center gap-2 rounded-xl p-2.5", style: { background: 'rgba(62,207,107,0.1)', border: '1px solid rgba(62,207,107,0.25)' } },
             React.createElement(CheckCircle2, { size: 14, color: "#3ECF6B" }),
@@ -1928,7 +1945,7 @@ function RulesTab() {
 /* ------------------------------------------------------------------ */
 /* Activity Sheet Tab                                                  */
 /* ------------------------------------------------------------------ */
-function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntry }) {
+function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntry, onFillGap }) {
     const base = new Date(now);
     base.setHours(0, 0, 0, 0);
     const dayStart = base.getTime() + logOffset * DAY;
@@ -1986,12 +2003,12 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         rows.length === 0 && (React.createElement("div", { className: "text-center text-xs text-[#5B6470] py-8" }, "Nothing logged on this day.")),
         React.createElement("div", { className: "rounded-xl overflow-hidden", style: { background: '#1B1F24', border: '1px solid #22262C' } }, withGaps.map(s => {
             if (s._gap) {
-                return (React.createElement("button", { key: s.id, onClick: () => onAddEntry(s.prevStatus || 'other_work', s._start, s._end, true), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
+                return (React.createElement("button", { key: s.id, onClick: () => onFillGap(s._start, s._end), className: "w-full flex items-center gap-2.5 px-3 py-2.5 border-b border-[#22262C] last:border-0 text-left transition active:scale-95" },
                     React.createElement("span", { className: "shrink-0 flex items-center justify-center rounded-md w-11 h-11", style: { background: '#14171A', border: '1px dashed #5B6470' } },
                         React.createElement("span", { className: "text-[#5B6470] text-sm" }, "?")),
                     React.createElement("span", { className: "flex-1" },
                         React.createElement("span", { className: "flex items-baseline justify-between" },
-                            React.createElement("span", { className: "text-sm font-medium", style: { color: '#F5A623' } }, "Unlogged \u2014 tap to fill"),
+                            React.createElement("span", { className: "text-sm font-medium", style: { color: '#F5A623' } }, "Unlogged \u2014 tap to join to the entry before"),
                             React.createElement("span", { className: "text-sm", style: { fontFamily: "'JetBrains Mono',monospace", color: '#F5A623' } }, fmtHM(s._end - s._start))),
                         React.createElement("span", { className: "flex items-baseline justify-between mt-0.5" },
                             React.createElement("span", { className: "text-[11px] text-[#8A93A0]", style: { fontFamily: "'JetBrains Mono',monospace" } },

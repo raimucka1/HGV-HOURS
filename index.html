@@ -1730,16 +1730,6 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement(SIcon, { size: 17, color: active ? '#14171A' : m.color }),
                 React.createElement("span", { className: "text-sm font-medium", style: { color: active ? '#14171A' : '#ECEEF0' } }, m.short)));
         })),
-        (() => {
-            const off = currentStatus === 'off';
-            return (React.createElement("div", { className: "mb-5" },
-                React.createElement("button", { onClick: () => !off && onSwitch(null), disabled: off, className: "w-full flex items-center justify-center gap-2.5 px-3 py-3 rounded-xl transition active:scale-95", style: { background: off ? META.off.color : '#1B1F24', border: `1px solid ${off ? META.off.color : '#2A2F36'}`, opacity: off ? 0.85 : 1 } },
-                    React.createElement(Power, { size: 17, color: off ? '#14171A' : META.off.color }),
-                    React.createElement("span", { className: "text-sm font-medium", style: { color: off ? '#14171A' : '#ECEEF0' } }, off ? 'Switched off \u2014 nothing logging' : 'Switch off')),
-                React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-1 text-left" }, off
-                    ? 'Nothing is being logged. Tap a status above to start again.'
-                    : 'Stops the clock without logging anything. For the end of a shift use Daily rest instead \u2014 that is what records your rest.')));
-        })(),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("div", { className: "flex items-center justify-between mb-2" },
                 React.createElement("button", { onClick: () => setDialOffset(o => o - 1) },
@@ -1833,7 +1823,20 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement(Chip, { tone: comp.reducedDailyCount >= 3 ? 'amber' : 'default' },
                     "Reduced rests: ",
                     comp.reducedDailyCount,
-                    "/3")))));
+                    "/3")))),
+        /* Rarely needed: stops the clock without logging anything. Kept small and
+           out of the way at the bottom so it isn't tapped by mistake mid-shift. */
+        (() => {
+            const off = currentStatus === 'off';
+            return React.createElement("div", { className: "mt-2 mb-6 text-left" },
+                React.createElement("button", { onClick: () => !off && onSwitch(null), disabled: off,
+                    className: "flex items-center gap-2 px-3 py-2 rounded-lg text-xs",
+                    style: { background: 'transparent', border: '1px solid #2A2F36', color: off ? '#5B6470' : '#8A93A0' } },
+                    React.createElement(Power, { size: 13, color: off ? '#5B6470' : '#8A93A0' }),
+                    off ? 'Switched off \u2014 nothing logging' : 'Switch off (stop logging)'),
+                React.createElement("div", { className: "text-[11px] text-[#5B6470] mt-1" },
+                    off ? 'Tap any status above to start again.' : 'Stops the clock without recording anything. For the end of a shift use Daily rest.'));
+        })());
 }
 /* ------------------------------------------------------------------ */
 /* Week Tab                                                             */

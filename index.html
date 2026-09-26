@@ -1823,7 +1823,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                 React.createElement(Chip, { tone: comp.reducedDailyCount >= 3 ? 'amber' : 'default' },
                     "Reduced rests: ",
                     comp.reducedDailyCount,
-                    "/3")))),
+                    "/3"))),
         /* Rarely needed: stops the clock without logging anything. Kept small and
            out of the way at the bottom so it isn't tapped by mistake mid-shift. */
         (() => {
@@ -1836,7 +1836,7 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                     off ? 'Switched off \u2014 nothing logging' : 'Switch off (stop logging)'),
                 React.createElement("div", { className: "text-[11px] text-[#5B6470] mt-1" },
                     off ? 'Tap any status above to start again.' : 'Stops the clock without recording anything. For the end of a shift use Daily rest.'));
-        })());
+        })()));
 }
 /* ------------------------------------------------------------------ */
 /* Week Tab                                                             */

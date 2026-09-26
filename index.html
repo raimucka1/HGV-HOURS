@@ -910,7 +910,10 @@ function computeCompliance(rawSegments, now) {
     const reducedDailyCount = dailyRestClassified.filter(c => c.seg._start >= sinceWR && c.cls === 'reduced').length;
     const shortDailyRests = dailyRestClassified.filter(c => c.seg._start >= sinceWR && c.cls === 'short');
     // duty days, split at qualifying (>=9h) rest boundaries
-    const boundaryIds = new Set(withEnd.filter(s => (s.status === 'daily_rest' || s.status === 'weekly_rest') && s._closed && (s._end - s._start) >= RULES.dailyRestReducedMin).map(s => s.id));
+    /* A rest ends the shift once it reaches 9 hours — finished or still running.
+       Before that, last shift's figures stay put, in case the rest was tapped by
+       mistake; after it, you are plainly not working and the figures start afresh. */
+    const boundaryIds = new Set(withEnd.filter(s => (s.status === 'daily_rest' || s.status === 'weekly_rest') && (s._end - s._start) >= RULES.dailyRestReducedMin).map(s => s.id));
     const dutyDays = [];
     let bucket = { segs: [] };
     for (const s of withEnd) {
@@ -950,6 +953,11 @@ function computeCompliance(rawSegments, now) {
                 contDriving = 0;
                 firstBreakPart = null;
             }
+        }
+        // a daily or weekly rest of 45 minutes or more clears the driving clock too
+        else if ((s.status === 'daily_rest' || s.status === 'weekly_rest') && dur >= RULES.breakRequired) {
+            contDriving = 0;
+            firstBreakPart = null;
         }
     }
     const wkStart = fixedWeekStart(now), wkEnd = wkStart + 7 * DAY, prevWkStart = wkStart - 7 * DAY;

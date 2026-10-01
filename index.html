@@ -1760,7 +1760,9 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
             };
             return React.createElement("div", { className: "flex gap-2 mb-3" },
                 tile('Driving', comp.contDriving, drvToBreak, META.driving.color, drvLive),
-                tile('Other work', ow, owToBreak, META.other_work.color, owLive));
+                /* Work since the last qualifying break (driving included, as the 6-hour
+                   rule counts both); drops to zero after a 15-minute-plus break. */
+                tile('Work', comp.workSinceBreak, owToBreak, META.other_work.color, owLive));
         })(),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("div", { className: "flex items-center gap-2 mb-1" },

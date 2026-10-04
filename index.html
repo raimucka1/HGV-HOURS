@@ -75,7 +75,7 @@ svg{display:block;vertical-align:middle}
 .inset-0{top:0;right:0;bottom:0;left:0}
 .top-0\.5{top:0.125rem}.top-2{top:0.5rem}.left-0{left:0}.right-0{right:0}.bottom-0{bottom:0}
 .left-1\/2{left:50%}.-translate-x-1\/2{transform:translateX(-50%)}
-.z-50{z-index:50}.overflow-hidden{overflow:hidden}
+.z-50{z-index:50}.overflow-hidden{overflow:hidden}.overflow-y-auto{overflow-y:auto}
 .mx-auto{margin-left:auto;margin-right:auto}
 .min-h-screen{min-height:100vh}.h-full{height:100%}.w-full{width:100%}
 .max-w-sm{max-width:24rem}.max-w-\[260px\]{max-width:260px}
@@ -1260,12 +1260,21 @@ function TimeBox({ label, value, onChange, hint, placeholder, onPrevDay, onNextD
                 onNextDay && React.createElement("button", { onClick: onNextDay, className: "px-2 rounded-md text-sm", style: arrow, "aria-label": "Day after" }, "\u203A"))),
         React.createElement("input", { type: "text", inputMode: "numeric", autoComplete: "off",
             value: value, placeholder: placeholder || 'HH:MM',
-            // digits only; the colon goes in by itself after the hours
+            /* Digits fill in from the right, like a microwave: type 2, 0, 0 and you
+               get 02:00 with no leading zero to type. The colon is always there.
+               Deleting everything leaves it empty (End: still ongoing). */
             onChange: e => {
-                const d = String(e.target.value).replace(/[^0-9]/g, '').slice(0, 4);
-                onChange(d.length <= 2 ? d : d.slice(0, 2) + ':' + d.slice(2));
+                const d = String(e.target.value).replace(/[^0-9]/g, '');
+                if (d.length < 4 && Number(d || 0) === 0) { onChange(''); return; }
+                const f = d.slice(-4).padStart(4, '0');
+                onChange(f.slice(0, 2) + ':' + f.slice(2));
             },
-            onFocus: e => { try { e.target.select(); } catch (x) {} },
+            onFocus: e => {
+                const el = e.target;
+                try { el.select(); } catch (x) {}
+                // keep the box above the keyboard while typing
+                setTimeout(() => { try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (x) {} }, 300);
+            },
             onBlur: () => { const p = parseHM(value); if (p) onChange(p); },
             className: "w-full rounded-lg px-3 py-2 text-[#ECEEF0]",
             style: { background: '#22262C', border: '1px solid #2A2F36', fontFamily: "'JetBrains Mono',monospace", fontSize: 26, fontWeight: 700, letterSpacing: 1 } }));
@@ -1364,7 +1373,7 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
         }
         onSave(Object.assign(Object.assign({}, entry), { status: withStatus || status, start: b.start, end: b.end }));
     }
-    return (React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-end sm:items-center justify-center z-50 p-4" },
+    return (React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-start justify-center z-50 p-4 overflow-y-auto" },
         React.createElement("div", { className: "bg-[#1B1F24] border border-[#2A2F36] rounded-2xl w-full max-w-sm p-5" },
             React.createElement("div", { className: "flex items-center justify-between mb-4" },
                 React.createElement("h3", { className: "text-[#ECEEF0] font-semibold", style: { fontFamily: "'Oswald',sans-serif" } }, isNew ? 'Add entry' : 'Edit entry'),
@@ -1588,7 +1597,8 @@ function App() {
                 if (!movingStartRef.current)
                     movingStartRef.current = t;
                 resumeMsRef.current += dt;
-                if (cur.status !== 'driving' && resumeMsRef.current >= GPS_START_CONFIRM_MS) {
+                // a Break (or POA) is only ever ended by you, never by GPS
+                if (cur.status === 'other_work' && resumeMsRef.current >= GPS_START_CONFIRM_MS) {
                     switchStatus('driving', 'gps', movingStartRef.current);
                 }
             }

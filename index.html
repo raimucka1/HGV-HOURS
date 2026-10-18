@@ -79,7 +79,7 @@ svg{display:block;vertical-align:middle}
 .mx-auto{margin-left:auto;margin-right:auto}
 .min-h-screen{min-height:100vh}.h-full{height:100%}.w-full{width:100%}
 .max-w-sm{max-width:24rem}.max-w-\[260px\]{max-width:260px}
-.text-left{text-align:left}.text-center{text-align:center}.py-8{padding-top:2rem;padding-bottom:2rem}
+.text-left{text-align:left}.m-3{margin:0.75rem}.text-\[\#F5A623\]{color:#F5A623}.text-center{text-align:center}.py-8{padding-top:2rem;padding-bottom:2rem}
 .gap-0{gap:0px}
 .gap-x-0{column-gap:0px}
 .gap-y-0{row-gap:0px}
@@ -537,6 +537,59 @@ function stripTransient(seg) {
 }
 /* The entry that ends where a gap begins, with its End moved to close the gap —
    what opens when you tap a gap. Null if nothing ends there. */
+/* What an edit would wipe out: other entries (not the one being edited) whose
+   time is no longer recorded as that activity at all afterwards. Trimming a
+   neighbour doesn't count; deleting it does. */
+function editImpact(before, after, editedId, now) {
+    let lostMs = 0, count = 0, from = null, to = null;
+    for (const o of before) {
+        if (o.id === editedId)
+            continue;
+        const os = new Date(o.start).getTime();
+        const oe = Math.min(o.end ? new Date(o.end).getTime() : now, now);
+        if (oe - os < 60 * 1000)
+            continue; // slivers and bookings for later don't count
+        let kept = 0;
+        for (const n of after) {
+            if (n.status !== o.status)
+                continue;
+            const ns = new Date(n.start).getTime();
+            const ne = n.end ? new Date(n.end).getTime() : now;
+            kept += Math.max(0, Math.min(oe, ne) - Math.max(os, ns));
+        }
+        if (kept < 60 * 1000) {
+            lostMs += oe - os;
+            count++;
+            from = from == null ? os : Math.min(from, os);
+            to = to == null ? oe : Math.max(to, oe);
+        }
+    }
+    return { lostMs, count, from, to };
+}
+/* Undo history: a copy of the last 8 days of the log is kept before every change
+   you make, newest first, so any mistake can be put back from Settings. */
+const BACKUP_KEY = STORAGE_PREFIX + 'backups', BACKUP_DAYS = 8, BACKUP_MAX = 15;
+function readBackups() {
+    try { return JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]') || []; } catch (e) { return []; }
+}
+function pushBackup(segs, label) {
+    try {
+        const t = Date.now(), from = t - BACKUP_DAYS * DAY;
+        const kept = segs.filter(s => !s.end || new Date(s.end).getTime() >= from).map(stripTransient);
+        let list = [{ t, label, from, segments: kept }].concat(readBackups()).slice(0, BACKUP_MAX);
+        for (;;) {
+            try { localStorage.setItem(BACKUP_KEY, JSON.stringify(list)); break; }
+            catch (e) { if (list.length <= 1) break; list = list.slice(0, -1); }
+        }
+    }
+    catch (e) { /* the log itself is unaffected */ }
+}
+/* Put the log back as it was in a backup. Entries older than the backup's window
+   are left alone. */
+function backupApplied(current, b, now) {
+    const older = current.filter(s => s.end && new Date(s.end).getTime() < b.from);
+    return cleanSegments(older.concat(b.segments.map(stripTransient)), now);
+}
 function gapEditTarget(list, startMs, endMs) {
     const before = list.find(x => x.end && Math.abs(new Date(x.end).getTime() - startMs) < 60 * 1000);
     return before ? Object.assign(Object.assign({}, before), { end: new Date(endMs).toISOString() }) : null;
@@ -669,7 +722,7 @@ function applyOverride(list, entry, now) {
             /* Only a segment with a real recorded end has a tail worth keeping. One
                that was simply still running had no end — it stopped when this entry
                began, so it must not reappear on the far side of it. */
-            if (isFinite(e) && seg.end) {
+            if (isFinite(e) && (seg.end || !openEnded)) {
                 out.push(Object.assign(Object.assign({}, seg), { id: uid(), start: new Date(e).toISOString(), end: seg.end }));
             }
             continue;
@@ -1292,6 +1345,28 @@ function GapAsk({ gap, onJoin, onOther, onClose }) {
                 m ? "Something else" : "Add an entry"),
             React.createElement("button", { onClick: onClose, className: "w-full py-2 text-xs", style: { color: '#8A93A0' } }, "Cancel")));
 }
+function ConfirmEdit({ pending, onAlt, onConfirm, onCancel }) {
+    const { plan, alt } = pending;
+    const m = META[plan.clean.status] || META.off;
+    const st = new Date(plan.clean.start).getTime();
+    const im = plan.impact;
+    const altSt = alt ? new Date(alt.clean.start).getTime() : null;
+    return React.createElement("div", { className: "fixed inset-0 bg-black/70 flex items-start justify-center z-50 p-4 overflow-y-auto" },
+        React.createElement("div", { className: "w-full max-w-sm rounded-2xl p-5 mt-6", style: { background: '#1B1F24', border: '1px solid #FF5A5A' } },
+            React.createElement("h3", { className: "font-semibold mb-2", style: { fontFamily: "'Oswald',sans-serif", color: '#FF5A5A', fontSize: 20 } }, "This would delete logged time"),
+            React.createElement("p", { className: "text-sm text-[#ECEEF0] mb-1 leading-relaxed" },
+                m.label, " from ", React.createElement("b", null, fmtClock(st)), " (", fmtDate(st), ") would wipe out ",
+                React.createElement("b", null, fmtHM(im.lostMs)), " you have already logged — ",
+                im.count, im.count === 1 ? ' entry' : ' entries', ", ", fmtClock(im.from), " – ", fmtClock(im.to), "."),
+            alt && React.createElement("p", { className: "text-sm mb-3", style: { color: '#F5A623' } }, "Did you mean ", fmtClock(altSt), "?"),
+            !alt && React.createElement("div", { className: "mb-3" }),
+            alt && React.createElement("button", { onClick: onAlt, className: "w-full py-3 rounded-xl font-semibold text-sm mb-2", style: { background: m.color, color: '#14171A' } },
+                "Use ", fmtClock(altSt), " instead"),
+            React.createElement("button", { onClick: onCancel, className: "w-full py-3 rounded-xl text-sm mb-2", style: { background: '#22262C', color: '#ECEEF0', border: '1px solid #2A2F36' } },
+                "Go back and change it"),
+            React.createElement("button", { onClick: onConfirm, className: "w-full py-2.5 rounded-xl text-xs", style: { background: 'transparent', color: '#FF5A5A', border: '1px solid #442' } },
+                "Delete them and save anyway")));
+}
 function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
     const [status, setStatus] = useState(entry.status);
     const origS = new Date(entry.start).getTime();
@@ -1329,7 +1404,9 @@ function EditEntryModal({ entry, isNew, onSave, onDelete, onClose }) {
         const switching = !isNew && origE == null && status !== entry.status
             && (sh !== initialStart || (isRest(entry.status) && !isRest(status)));
         // an untouched time stays exactly as it was, seconds and all
+        // a new entry goes on its own day (the day shown, e.g. "Add entry to this day")
         const s = startDay ? onDay(startDay, sh)
+            : isNew ? onDay(dayOf(origS), sh)
             : (!switching && sh === initialStart) ? origS
             : nearest(sh, switching ? Date.now() : origS);
         if (!String(end).trim())
@@ -1413,6 +1490,7 @@ function App() {
     const [toast, setToast] = useState('');
     const [undoSnap, setUndoSnap] = useState(null);
     const [gapAsk, setGapAsk] = useState(null);
+    const [pendingEdit, setPendingEdit] = useState(null);
     const segmentsRef = useRef([]);
     const lastPosRef = useRef(null);
     const speedEmaRef = useRef(null);
@@ -1498,36 +1576,69 @@ function App() {
         setSegments(next);
         persistDates(touchedDates, next);
     }
-    function saveEntry(updated) {
-        const exists = segmentsRef.current.some(s => s.id === updated.id);
-        const prev = exists ? segmentsRef.current.find(s => s.id === updated.id) : null;
+    /* Work out what saving would do, without doing it yet. */
+    function planSave(updated) {
+        const nowMs = Date.now();
+        const before = segmentsRef.current;
+        const prev = before.find(s => s.id === updated.id) || null;
         const clean = stripTransient(updated);
-        let next;
-        if (exists) {
+        let next, clamped = null;
+        if (prev) {
             /* Editing something already logged adjusts boundaries only. A new
                entry is an override and may legitimately overwrite its span. */
-            const before = segmentsRef.current;
-            const res = adjustEntry(before, clean, Date.now());
+            const res = adjustEntry(before, clean, nowMs);
             next = res.segments;
-            if (res.clamped) {
-                setUndoSnap(before);
-                setToast(res.clamped);
-            }
+            clamped = res.clamped;
         }
         else {
-            next = applyOverride(segmentsRef.current, clean, Date.now());
+            next = applyOverride(before, clean, nowMs);
         }
+        const label = prev ? 'Before editing ' + (META[prev.status] || META.off).short
+            : 'Before adding ' + (META[clean.status] || META.off).short;
+        return { updated, clean, before, prev, next, clamped, label, impact: editImpact(before, next, clean.id, nowMs) };
+    }
+    function commitSave(plan) {
+        pushBackup(plan.before, plan.label);
+        if (plan.clamped) {
+            setUndoSnap(plan.before);
+            setToast(plan.clamped);
+        }
+        segmentsRef.current = plan.next;
+        setSegments(plan.next);
+        const touched = new Set();
+        plan.before.concat(plan.next).forEach(x => touched.add(dateKey(x.start)));
+        persistDates(touched, plan.next);
+        setPendingEdit(null);
+        setEditEntry(null);
+    }
+    /* Never delete logged work silently. If a save would wipe out 15 minutes or
+       more of other entries, stop and ask first. A morning time that does that is
+       often meant as the afternoon (3:00 for 15:00), so offer that reading too. */
+    function saveEntry(updated) {
+        const plan = planSave(updated);
+        if (plan.impact.lostMs < 15 * MIN) {
+            commitSave(plan);
+            return;
+        }
+        let alt = null;
+        const st = new Date(plan.clean.start);
+        if (!plan.clean.end && st.getHours() < 12 && st.getTime() + 12 * HOUR <= Date.now() + 12 * HOUR) {
+            const altPlan = planSave(Object.assign({}, updated, { start: new Date(st.getTime() + 12 * HOUR).toISOString() }));
+            if (altPlan.impact.lostMs < 15 * MIN)
+                alt = altPlan;
+        }
+        setPendingEdit({ plan, alt });
+    }
+    function restoreBackup(b) {
+        const cur = segmentsRef.current;
+        pushBackup(cur, 'Before restoring');
+        const next = backupApplied(cur, b, Date.now());
         segmentsRef.current = next;
         setSegments(next);
-        const touched = new Set([dateKey(updated.start)]);
-        if (prev)
-            touched.add(dateKey(prev.start)); // entry may have been moved to another day
-        segmentsRef.current.forEach(x => touched.add(dateKey(x.start)));
-        next.forEach(x => touched.add(dateKey(x.start)));
+        const touched = new Set();
+        cur.concat(next).forEach(x => touched.add(dateKey(x.start)));
         persistDates(touched, next);
-        /* Moving a start later leaves the freed time belonging to nothing. Rather
-           than leave a silent hole, go straight to filling it. */
-        setEditEntry(null);
+        setToast('Log restored');
     }
     /* Tapping an unlogged gap: open the entry just before it in the normal Edit
        dialog, with its End already moved to where the gap ends. You see e.g.
@@ -1548,6 +1659,8 @@ function App() {
     }
     function deleteEntry(id) {
         const target = segmentsRef.current.find(s => s.id === id);
+        if (target)
+            pushBackup(segmentsRef.current, 'Before deleting ' + (META[target.status] || META.off).short);
         const next = segmentsRef.current.filter(s => s.id !== id);
         segmentsRef.current = next;
         setSegments(next);
@@ -1677,6 +1790,10 @@ function App() {
             onOther: () => { const g = gapAsk; setGapAsk(null); addEntry('other_work', g.startMs, g.endMs); },
             onClose: () => setGapAsk(null) }),
         editEntry && React.createElement(EditEntryModal, { key: editEntry.id, entry: editEntry, isNew: !!editEntry._isNew, onSave: saveEntry, onDelete: deleteEntry, onClose: () => setEditEntry(null) }),
+        pendingEdit && React.createElement(ConfirmEdit, { pending: pendingEdit,
+            onAlt: () => commitSave(pendingEdit.alt),
+            onConfirm: () => commitSave(pendingEdit.plan),
+            onCancel: () => setPendingEdit(null) }),
         React.createElement("div", { className: "px-4 pt-5 pb-3 flex items-center justify-between" },
             React.createElement("div", { className: "flex items-center gap-2" },
                 React.createElement(Truck, { size: 20, color: "#F5A623" }),
@@ -1688,11 +1805,12 @@ function App() {
         tab === 'week' && (React.createElement(WeekTab, { now: now, comp: comp, segments: segments, weekOffset: weekOffset, setWeekOffset: setWeekOffset, expandedDay: expandedDay, setExpandedDay: setExpandedDay, onEditEntry: setEditEntry, onAddEntry: addEntry, settings: settings, saveSettings: saveSettings })),
         tab === 'log' && (React.createElement(LogTab, { now: now, segments: segments, logOffset: logOffset, setLogOffset: setLogOffset, onEditEntry: setEditEntry, onAddEntry: addEntry, onFillGap: fillGap })),
         tab === 'rules' && React.createElement(RulesTab, null),
-        tab === 'settings' && React.createElement(SettingsTab, { settings: settings, saveSettings: saveSettings, segments: segments, setSegments: setSegments }),
+        tab === 'settings' && React.createElement(SettingsTab, { settings: settings, saveSettings: saveSettings, segments: segments, setSegments: setSegments, onRestore: restoreBackup }),
         toast && React.createElement("div", { className: "fixed top-2 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-[#FF5A5A] text-white text-xs px-3 py-1.5 rounded-full z-50 max-w-[260px]" },
             React.createElement("span", null, toast),
             undoSnap && React.createElement("button", { onClick: () => {
                     const before = segmentsRef.current, back = undoSnap;
+                    pushBackup(before, 'Before undo');
                     segmentsRef.current = back;
                     setSegments(back);
                     const days = new Set();
@@ -2177,8 +2295,10 @@ function LogTab({ now, segments, logOffset, setLogOffset, onEditEntry, onAddEntr
         React.createElement("button", { onClick: () => onAddEntry('other_work', isToday ? Date.now() : dayStart + 9 * HOUR), className: "w-full mt-3 py-2.5 rounded-lg text-xs", style: { background: '#22262C', color: '#ECEEF0' } }, "+ Add entry to this day"),
         React.createElement("div", { className: "text-[10px] text-[#5B6470] mt-2" }, "Tap any row to change its times or status. This is your own record \u2014 your tachograph remains the legal one.")));
 }
-function SettingsTab({ settings, saveSettings, segments, setSegments }) {
+function SettingsTab({ settings, saveSettings, segments, setSegments, onRestore }) {
     const [confirmReset, setConfirmReset] = useState(false);
+    const [backups, setBackups] = useState(() => readBackups());
+    const [askRestore, setAskRestore] = useState(null);
     function exportCsv() {
         const rows = [['Status', 'Start', 'End', 'Duration', 'Source']];
         [...segments].sort((a, b) => new Date(a.start) - new Date(b.start)).forEach(s => {
@@ -2213,7 +2333,23 @@ function SettingsTab({ settings, saveSettings, segments, setSegments }) {
         saveSettings({ gpsEnabled: true, gpsThresholdMph: 3, compensations: {} });
         setConfirmReset(false);
     }
+    const undoCard = React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
+        React.createElement("h3", { className: "text-xs uppercase tracking-wide text-[#8A93A0] mb-1" }, "Undo history"),
+        React.createElement("p", { className: "text-xs text-[#5B6470] mb-3" }, "A copy of your log is kept before every change you make. If something goes wrong, put it back to how it was."),
+        backups.length === 0 && React.createElement("p", { className: "text-xs text-[#8A93A0]" }, "Nothing yet \u2014 changes you make from now on will appear here."),
+        backups.map((b, i) => React.createElement("div", { key: b.t + ':' + i, className: "py-2 border-t border-[#22262C]" },
+            React.createElement("div", { className: "flex items-center justify-between gap-2" },
+                React.createElement("div", null,
+                    React.createElement("div", { className: "text-sm text-[#ECEEF0]" }, b.label),
+                    React.createElement("div", { className: "text-[11px] text-[#8A93A0]" }, fmtDate(b.t), ", ", fmtClock(b.t))),
+                askRestore !== i && React.createElement("button", { onClick: () => setAskRestore(i), className: "shrink-0 text-xs px-3 py-1.5 rounded-lg", style: { background: '#22262C', color: '#F5A623', border: '1px solid #2A2F36' } }, "Restore")),
+            askRestore === i && React.createElement("div", { className: "mt-2 rounded-lg p-2.5", style: { background: 'rgba(245,166,35,0.1)' } },
+                React.createElement("p", { className: "text-xs text-[#F5A623] mb-2" }, "Put your log back to how it was just before this change? Anything changed since will be undone too \u2014 you can restore that again from here."),
+                React.createElement("div", { className: "flex gap-2" },
+                    React.createElement("button", { onClick: () => setAskRestore(null), className: "flex-1 py-2 rounded-lg text-xs", style: { background: '#22262C', color: '#8A93A0' } }, "No"),
+                    React.createElement("button", { onClick: () => { onRestore && onRestore(b); setAskRestore(null); setBackups(readBackups()); }, className: "flex-1 py-2 rounded-lg text-xs font-semibold", style: { background: '#F5A623', color: '#14171A' } }, "Yes, restore"))))));
     return (React.createElement("div", { className: "px-4" },
+        undoCard,
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("h3", { className: "text-xs uppercase tracking-wide text-[#8A93A0] mb-3" }, "GPS"),
             React.createElement("div", { className: "flex items-center justify-between" },

@@ -1698,7 +1698,10 @@ function App() {
             setSpeedKmh(Math.max(0, ema * 3.6));
             const dt = lastSampleTRef.current ? Math.min(t - lastSampleTRef.current, 30 * 1000) : 0;
             lastSampleTRef.current = t;
-            const cur = segmentsRef.current[segmentsRef.current.length - 1];
+            /* the entry running now, same as the Now screen shows - not an entry booked for later */
+            const nowMs = Date.now();
+            const live = segmentsRef.current.filter(x => new Date(x.start).getTime() <= nowMs);
+            const cur = live[live.length - 1];
             /* Off duty (nothing open) or on a rest: never auto-start. Clocking on
                is a decision, not something GPS should make for you. */
             if (!cur || cur.end || cur.status === 'daily_rest' || cur.status === 'weekly_rest')

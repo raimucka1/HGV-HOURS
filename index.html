@@ -1877,8 +1877,17 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
             const owToBreak = Math.max(0, Math.min.apply(null, wtdCands));
             const drvLive = currentStatus === 'driving';
             const owLive = currentStatus === 'other_work';
-            const tile = (label, value, toBreak, color, live, sinceBreak) => {
+            const tile = (label, value, toBreak, color, live, sinceBreak, countdownBig) => {
                 const due = toBreak <= 0;
+                if (countdownBig)
+                    /* big number = time left to the break, small = time worked so far */
+                    return React.createElement("div", { className: "flex-1 rounded-2xl px-3 py-3", style: {
+                            background: live ? color : '#1B1F24', border: `1px solid ${live ? color : '#2A2F36'}` } },
+                        React.createElement("div", { className: "text-xs uppercase tracking-wide font-semibold", style: { color: live ? '#14171A' : color } }, label),
+                        React.createElement("div", { style: { fontFamily: "'JetBrains Mono',monospace", fontSize: 30, fontWeight: 700, lineHeight: 1.15,
+                                color: live ? '#14171A' : due ? '#FF5A5A' : '#ECEEF0' } }, due ? 'Break due' : fmtHM(toBreak)),
+                        !due && React.createElement("div", { className: "text-xs font-semibold", style: { color: live ? '#14171A' : '#8A93A0' } }, 'to break'),
+                        React.createElement("div", { className: "text-xs font-semibold", style: { color: live ? '#14171A' : '#8A93A0' } }, `${fmtHM(value)} ${countdownBig}`));
                 return React.createElement("div", { className: "flex-1 rounded-2xl px-3 py-3", style: {
                         background: live ? color : '#1B1F24', border: `1px solid ${live ? color : '#2A2F36'}` } },
                     React.createElement("div", { className: "text-xs uppercase tracking-wide font-semibold", style: { color: live ? '#14171A' : color } }, label),
@@ -1890,10 +1899,10 @@ function DashboardTab({ now, comp, alerts, currentStatus, currentSegment, dialOf
                         `${fmtHM(sinceBreak)} since last break`));
             };
             return React.createElement("div", { className: "flex gap-2 mb-3" },
-                tile('Driving', comp.contDriving, drvToBreak, META.driving.color, drvLive),
+                tile('Driving', comp.contDriving, drvToBreak, META.driving.color, drvLive, null, 'driven'),
                 /* Work since the last qualifying break (driving included, as the 6-hour
                    rule counts both); drops to zero after a 15-minute-plus break. */
-                tile('Work', comp.workSinceBreak, owToBreak, META.other_work.color, owLive));
+                tile('Work', comp.workSinceBreak, owToBreak, META.other_work.color, owLive, null, 'worked'));
         })(),
         React.createElement("div", { className: "rounded-2xl p-4 mb-4", style: { background: '#1B1F24', border: '1px solid #2A2F36' } },
             React.createElement("div", { className: "flex items-center gap-2 mb-1" },
